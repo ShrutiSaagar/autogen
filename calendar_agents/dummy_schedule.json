@@ -1,0 +1,72 @@
+{
+  "schedule": [
+    {
+      "id": "1",
+      "title": "Team Meeting",
+      "description": "Weekly team sync",
+      "start": "2023-10-15T10:00:00",
+      "end": "2023-10-15T11:00:00",
+      "location": "Conference Room A",
+      "priority": "high"
+    },
+    {
+      "id": "2",
+      "title": "Doctor Appointment",
+      "description": "Annual checkup",
+      "start": "2023-10-16T14:30:00",
+      "end": "2023-10-16T15:30:00",
+      "location": "City Medical Center",
+      "priority": "high"
+    },
+    {
+      "id": "3",
+      "title": "Project Deadline",
+      "description": "Submit final report for Q3",
+      "start": "2023-10-18T17:00:00",
+      "end": "2023-10-18T17:00:00",
+      "location": "",
+      "priority": "critical"
+    },
+    {
+      "id": "4",
+      "title": "Lunch with Client",
+      "description": "Discuss partnership opportunities",
+      "start": "2023-10-20T12:00:00",
+      "end": "2023-10-20T13:30:00",
+      "location": "Downtown Bistro",
+      "priority": "medium"
+    }
+  ],
+  "user_preferences": {
+    "work_hours": {
+      "start": "09:00:00",
+      "end": "17:00:00"
+    },
+    "lunch_time": {
+      "start": "12:00:00",
+      "end": "13:00:00"
+    },
+    "meeting_preferences": {
+      "max_daily_meetings": 3,
+      "preferred_meeting_duration": 30,
+      "buffer_between_meetings": 15
+    },
+    "focus_time": [
+      {
+        "day": "Monday",
+        "start": "14:00:00",
+        "end": "16:00:00"
+      },
+      {
+        "day": "Wednesday",
+        "start": "09:00:00",
+        "end": "11:00:00"
+      },
+      {
+        "day": "Friday",
+        "start": "15:00:00",
+        "end": "17:00:00"
+      }
+    ]
+  }
+} 

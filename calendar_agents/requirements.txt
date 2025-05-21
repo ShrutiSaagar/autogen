@@ -1,0 +1,7 @@
+# Core AutoGen packages
+autogen-agentchat>=0.4.0
+autogen-ext[openai,web-surfer]>=0.4.0
+
+# Additional dependencies
+playwright>=1.42.0
+python-dotenv>=1.0.0 
