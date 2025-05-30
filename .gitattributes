@@ -29,6 +29,7 @@
 *.sql             text
 *.styl            text
 *.tag             text
+* text=auto eol=lf
 *.ts              text
 *.tsx             text
 *.xml             text
