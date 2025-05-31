@@ -146,6 +146,60 @@ class ScheduleMeetingOutput(BaseModel):
     event_link: str = Field(description="Link to the created calendar event")
 
 
+class GetEventsInput(BaseModel):
+    start_date: str = Field(description="Start date for event search (YYYY-MM-DD format)")
+    end_date: str = Field(description="End date for event search (YYYY-MM-DD format)")
+    max_results: int = Field(description="Maximum number of events to return", default=20)
+
+
+class CalendarEvent(BaseModel):
+    event_id: str = Field(description="ID of the calendar event")
+    summary: str = Field(description="Event title/summary")
+    start_time: str = Field(description="Event start time")
+    end_time: str = Field(description="Event end time")
+    location: str = Field(description="Event location", default="")
+    description: str = Field(description="Event description", default="")
+    attendees: list = Field(description="List of attendees", default=[])
+
+
+class GetEventsOutput(BaseModel):
+    events: list[CalendarEvent] = Field(description="List of calendar events")
+    total_count: int = Field(description="Total number of events found")
+
+
+class EditEventInput(BaseModel):
+    event_id: str = Field(description="ID of the event to edit")
+    summary: str = Field(description="New event title/summary", default="")
+    start_date: str = Field(description="New start date (YYYY-MM-DD)", default="")
+    start_time: str = Field(description="New start time (HH:MM)", default="")
+    duration_minutes: int = Field(description="New duration in minutes", default=0)
+    location: str = Field(description="New event location", default="")
+    description: str = Field(description="New event description", default="")
+
+
+class EditEventOutput(BaseModel):
+    success: bool = Field(description="Whether the edit was successful")
+    message: str = Field(description="Success or error message")
+    event_link: str = Field(description="Link to the updated event", default="")
+
+
+class CreatePlaceholderEventInput(BaseModel):
+    title: str = Field(description="Meeting title", default="Placeholder Meeting")
+    date: str = Field(description="Date of meeting (YYYY-MM-DD format)")
+    time: str = Field(description="Time of meeting (HH:MM format)")
+    duration_minutes: int = Field(description="Duration in minutes", default=30)
+    recipient_placeholder: str = Field(description="Placeholder for recipient", default="TBD - Recipient to be confirmed")
+    location: str = Field(description="Meeting location", default="TBD - Location to be confirmed")
+    description: str = Field(description="Meeting description", default="")
+    is_placeholder: bool = Field(description="Mark as placeholder event", default=True)
+
+
+class CreatePlaceholderEventOutput(BaseModel):
+    event_id: str = Field(description="ID of the created placeholder event")
+    event_link: str = Field(description="Link to the created event")
+    placeholder_details: dict = Field(description="Details of what needs confirmation")
+
+
 class GoogleCalendarService:
     # If modifying these scopes, delete the file token.pickle.
     SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -218,6 +272,231 @@ class GoogleCalendarService:
             print(f"An error occurred: {error}")
             raise
 
+    def get_events_approx(self, args: GetEventsInput) -> Dict[str, Any]:
+        """Get calendar events for a given timeframe."""
+        try:
+            # Parse start and end dates
+            start_date = datetime.datetime.strptime(args.start_date, "%Y-%m-%d")
+            end_date = datetime.datetime.strptime(args.end_date, "%Y-%m-%d")
+            # set start date to 7 days before today
+            start_date = start_date - datetime.timedelta(days=7)
+            # set end date to 7 days after today
+            end_date = end_date + datetime.timedelta(days=7)
+            args.start_date = start_date.strftime("%Y-%m-%d")
+            args.end_date = end_date.strftime("%Y-%m-%d")
+            return self.get_events(args)
+        except HttpError as error:
+            print(f"An error occurred: {error}")
+            raise
+        except ValueError as error:
+            print(f"Date parsing error: {error}")
+            raise
+
+    def get_events(self, args: GetEventsInput) -> Dict[str, Any]:
+        """Get calendar events for a given timeframe."""
+        try:
+            # Parse start and end dates
+            start_date = datetime.datetime.strptime(args.start_date, "%Y-%m-%d")
+            end_date = datetime.datetime.strptime(args.end_date, "%Y-%m-%d")
+            
+            # Add time to make it end of day for end_date
+            end_date = end_date.replace(hour=23, minute=59, second=59)
+            
+            # Format for Google Calendar API
+            start_time_str = start_date.isoformat() + 'Z'
+            end_time_str = end_date.isoformat() + 'Z'
+            
+            # Call the Calendar API
+            events_result = self.service.events().list(
+                calendarId='primary',
+                timeMin=start_time_str,
+                timeMax=end_time_str,
+                maxResults=args.max_results,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            
+            events = events_result.get('items', [])
+            
+            # Format events for return
+            formatted_events = []
+            for event in events:
+                start = event['start'].get('dateTime', event['start'].get('date'))
+                end = event['end'].get('dateTime', event['end'].get('date'))
+                
+                # Extract attendees
+                attendees = []
+                if 'attendees' in event:
+                    attendees = [attendee.get('email', '') for attendee in event['attendees']]
+                
+                formatted_event = CalendarEvent(
+                    event_id=event.get('id', ''),
+                    summary=event.get('summary', 'No Title'),
+                    start_time=start,
+                    end_time=end,
+                    location=event.get('location', ''),
+                    description=event.get('description', ''),
+                    attendees=attendees
+                )
+                formatted_events.append(formatted_event)
+            
+            return {
+                'events': formatted_events,
+                'total_count': len(formatted_events)
+            }
+            
+        except HttpError as error:
+            print(f"An error occurred while getting events: {error}")
+            raise
+        except ValueError as error:
+            print(f"Date parsing error: {error}")
+            raise
+
+    def edit_event(self, args: EditEventInput) -> Dict[str, str]:
+        """Edit an existing calendar event."""
+        try:
+            # First, get the existing event
+            event = self.service.events().get(calendarId='primary', eventId=args.event_id).execute()
+            
+            # Update fields only if new values are provided
+            if args.summary:
+                event['summary'] = args.summary
+            
+            if args.location:
+                event['location'] = args.location
+                
+            if args.description:
+                event['description'] = args.description
+            
+            # Handle date/time updates
+            if args.start_date and args.start_time:
+                datetime_str = f"{args.start_date} {args.start_time}"
+                start_time = datetime.datetime.strptime(datetime_str, "%Y-%m-%d %H:%M")
+                
+                # Calculate end time
+                if args.duration_minutes > 0:
+                    end_time = start_time + datetime.timedelta(minutes=args.duration_minutes)
+                else:
+                    # Keep the original duration if no new duration specified
+                    original_start = event['start'].get('dateTime')
+                    original_end = event['end'].get('dateTime')
+                    if original_start and original_end:
+                        original_start_dt = datetime.datetime.fromisoformat(original_start.replace('Z', '+00:00'))
+                        original_end_dt = datetime.datetime.fromisoformat(original_end.replace('Z', '+00:00'))
+                        original_duration = original_end_dt - original_start_dt
+                        end_time = start_time + original_duration
+                    else:
+                        # Default to 30 minutes if we can't determine original duration
+                        end_time = start_time + datetime.timedelta(minutes=30)
+                
+                # Update the event times
+                event['start'] = {
+                    'dateTime': start_time.isoformat(),
+                    'timeZone': 'America/Chicago',
+                }
+                event['end'] = {
+                    'dateTime': end_time.isoformat(),
+                    'timeZone': 'America/Chicago',
+                }
+            
+            # Update the event
+            updated_event = self.service.events().update(
+                calendarId='primary', 
+                eventId=args.event_id, 
+                body=event
+            ).execute()
+            
+            return {
+                'success': True,
+                'message': 'Event updated successfully',
+                'event_link': updated_event.get('htmlLink', '')
+            }
+            
+        except HttpError as error:
+            error_msg = f"An error occurred while editing event: {error}"
+            print(error_msg)
+            return {
+                'success': False,
+                'message': error_msg,
+                'event_link': ''
+            }
+        except ValueError as error:
+            error_msg = f"Date parsing error: {error}"
+            print(error_msg)
+            return {
+                'success': False,
+                'message': error_msg,
+                'event_link': ''
+            }
+
+    def create_placeholder_event(self, args: CreatePlaceholderEventInput) -> Dict[str, Any]:
+        """Create a placeholder calendar event with TBD details."""
+        try:
+            # Parse date and time into datetime
+            datetime_str = f"{args.date} {args.time}"
+            start_time = datetime.datetime.strptime(datetime_str, "%Y-%m-%d %H:%M")
+            end_time = start_time + datetime.timedelta(minutes=args.duration_minutes)
+            
+            # Format datetime for Google Calendar API
+            start_time_str = start_time.isoformat()
+            end_time_str = end_time.isoformat()
+            
+            # Create event title with placeholder indicator
+            title = f"[PLACEHOLDER] {args.title}"
+            
+            # Create description with placeholder information
+            placeholder_description = f"""
+🔄 This is a PLACEHOLDER event created by AI Assistant
+
+📋 DETAILS TO CONFIRM:
+• Recipients: {args.recipient_placeholder}
+• Location: {args.location}
+• Final time: {args.time} ({args.duration_minutes} min)
+
+⚠️ Please confirm or modify these details!
+
+Original Description: {args.description}
+            """.strip()
+            
+            # Create event body
+            event_body = {
+                'summary': title,
+                'location': args.location,
+                'description': placeholder_description,
+                'start': {
+                    'dateTime': start_time_str,
+                    'timeZone': 'America/Chicago',
+                },
+                'end': {
+                    'dateTime': end_time_str,
+                    'timeZone': 'America/Chicago',
+                },
+                'colorId': '5'  # Yellow color to indicate placeholder
+            }
+            
+            # Create the event
+            event = self.service.events().insert(calendarId='primary', body=event_body).execute()
+            
+            placeholder_details = {
+                'recipient_needs_confirmation': args.recipient_placeholder,
+                'location_needs_confirmation': args.location,
+                'time_needs_confirmation': f"{args.date} {args.time}",
+                'duration_needs_confirmation': f"{args.duration_minutes} minutes"
+            }
+            
+            return {
+                'event_id': event.get('id'),
+                'event_link': event.get('htmlLink'),
+                'placeholder_details': placeholder_details
+            }
+            
+        except HttpError as error:
+            print(f"An error occurred creating placeholder: {error}")
+            raise
+        except ValueError as error:
+            print(f"Date parsing error: {error}")
+            raise
+
 
 class ScheduleMeetingTool(BaseTool[ScheduleMeetingInput, ScheduleMeetingOutput]):
     def __init__(self):
@@ -244,6 +523,109 @@ class ScheduleMeetingTool(BaseTool[ScheduleMeetingInput, ScheduleMeetingOutput])
         )
 
 
+class GetEventsTool(BaseTool[GetEventsInput, GetEventsOutput]):
+    def __init__(self):
+        super().__init__(
+            GetEventsInput,
+            GetEventsOutput,
+            "get_events",
+            "Get calendar events for a specific date range",
+        )
+        self.calendar_service = GoogleCalendarService()
+
+    async def run(self, args: GetEventsInput, cancellation_token: CancellationToken) -> GetEventsOutput:
+        print(f"Getting events from {args.start_date} to {args.end_date}")
+        
+        # Get events from Google Calendar
+        events_info = self.calendar_service.get_events(args)
+        
+        print(f"Found {events_info['total_count']} events")
+        print(f"Standard event info log")
+        print(f"Events: {events_info}")
+        print(f"Events: {events_info['events']}")
+        return GetEventsOutput(
+            events=events_info['events'],
+            total_count=events_info['total_count']
+        )
+
+
+class GetEventsApproxTool(BaseTool[GetEventsInput, GetEventsOutput]):
+    def __init__(self):
+        super().__init__(
+            GetEventsInput,
+            GetEventsOutput,
+            "get_events_approx",
+            "Get calendar events for the previous 7 days and the next 7 days",
+        )
+        self.calendar_service = GoogleCalendarService()
+
+    async def run(self, args: GetEventsInput, cancellation_token: CancellationToken) -> GetEventsOutput:
+        print(f"Getting events from {args.start_date} to {args.end_date}")
+        
+        # Get events from Google Calendar
+        events_info = self.calendar_service.get_events_approx(args)
+        
+        print(f"Found {events_info['total_count']} events")
+        
+        return GetEventsOutput(
+            events=events_info['events'],
+            total_count=events_info['total_count']
+        )
+
+
+class EditEventTool(BaseTool[EditEventInput, EditEventOutput]):
+    def __init__(self):
+        super().__init__(
+            EditEventInput,
+            EditEventOutput,
+            "edit_event",
+            "Edit an existing calendar event",
+        )
+        self.calendar_service = GoogleCalendarService()
+
+    async def run(self, args: EditEventInput, cancellation_token: CancellationToken) -> EditEventOutput:
+        print(f"Editing event with ID: {args.event_id}")
+        
+        # Edit the event in Google Calendar
+        edit_result = self.calendar_service.edit_event(args)
+        
+        if edit_result['success']:
+            print(f"Event edited successfully")
+        else:
+            print(f"Failed to edit event: {edit_result['message']}")
+        
+        return EditEventOutput(
+            success=edit_result['success'],
+            message=edit_result['message'],
+            event_link=edit_result['event_link']
+        )
+
+
+class CreatePlaceholderEventTool(BaseTool[CreatePlaceholderEventInput, CreatePlaceholderEventOutput]):
+    def __init__(self):
+        super().__init__(
+            CreatePlaceholderEventInput,
+            CreatePlaceholderEventOutput,
+            "create_placeholder_event",
+            "Create a placeholder calendar event with TBD details that need user confirmation",
+        )
+        self.calendar_service = GoogleCalendarService()
+
+    async def run(self, args: CreatePlaceholderEventInput, cancellation_token: CancellationToken) -> CreatePlaceholderEventOutput:
+        print(f"Creating placeholder event: {args.title} on {args.date} at {args.time}")
+        
+        # Create the placeholder event in Google Calendar
+        placeholder_result = self.calendar_service.create_placeholder_event(args)
+        
+        print(f"Placeholder event created successfully. Event ID: {placeholder_result['event_id']}")
+        
+        return CreatePlaceholderEventOutput(
+            event_id=placeholder_result['event_id'],
+            event_link=placeholder_result['event_link'],
+            placeholder_details=placeholder_result['placeholder_details']
+        )
+
+
 @type_subscription("scheduling_assistant_conversation")
 class SchedulingAssistantAgent(RoutedAgent):
     def __init__(
@@ -265,10 +647,25 @@ class SchedulingAssistantAgent(RoutedAgent):
         self._system_messages = [
             SystemMessage(
                 content=f"""
-I am a helpful AI assistant that helps schedule meetings.
-I can add events directly to your Google Calendar.
-I will ask for necessary details like date, time, recipient, and optionally duration, summary, description, location, and attendee email.
-If there are missing parameters, I will ask for them.
+I am a helpful AI assistant that helps with calendar management.
+I can:
+1. Schedule new meetings and add them directly to your Google Calendar
+2. View existing events in your calendar for a specific date range
+3. Edit existing calendar events (modify time, location, description, etc.)
+4. Create placeholder events with default values when information is incomplete
+
+For scheduling, I need details like date, time, recipient, and optionally duration, summary, description, location, and attendee email.
+For viewing events, I need a date range (start and end dates) or I will get events for the previous 7 days and the next 7 days by default.
+For editing events, I need the event ID and the fields you want to change.
+For placeholder events, I can create events with reasonable defaults and mark them for later confirmation.
+
+When creating placeholder events:
+- I'll use working hours (9 AM - 6 PM) for default times
+- I'll set reasonable durations (30-60 minutes)
+- I'll mark recipients and locations as "TBD" if not specified
+- The event will be clearly marked as a placeholder needing confirmation
+
+If there are missing parameters, I will ask for them or create reasonable placeholders.
 
 Today's date is {datetime.datetime.now().strftime("%Y-%m-%d")}
 """
@@ -279,7 +676,7 @@ Today's date is {datetime.datetime.now().strftime("%Y-%m-%d")}
     async def handle_message(self, message: UserTextMessage, ctx: MessageContext) -> None:
         await self._model_context.add_message(UserMessage(content=message.content, source=message.source))
 
-        tools = [ScheduleMeetingTool()]
+        tools = [ScheduleMeetingTool(), GetEventsTool(), GetEventsApproxTool(), EditEventTool(), CreatePlaceholderEventTool()]
         response = await self._model_client.create(
             self._system_messages + (await self._model_context.get_messages()), tools=tools
         )
@@ -292,15 +689,45 @@ Today's date is {datetime.datetime.now().strftime("%Y-%m-%d")}
                 arguments = json.loads(call.arguments)
                 result = await tool.run_json(arguments, ctx.cancellation_token)
                 
-                # Craft a response message about the scheduled meeting
-                response_text = f"Meeting scheduled successfully! You can view it here: {result.event_link}"
+                # Handle different tool responses
+                if call.name == "schedule_meeting":
+                    response_text = f"Meeting scheduled successfully! You can view it here: {result.event_link}"
+                elif call.name == "get_events" or call.name == "get_events_approx":
+                    if result.total_count == 0:
+                        response_text = f"No events found for the specified date range."
+                    else:
+                        events_list = []
+                        for event in result.events:
+                            attendees_str = ", ".join(event.attendees) if event.attendees else "None"
+                            events_list.append(
+                                f"• **{event.summary}**\n"
+                                f"  📅 {event.start_time} - {event.end_time}\n"
+                                f"  📍 {event.location or 'No location'}\n"
+                                f"  👥 Attendees: {attendees_str}\n"
+                                f"  🆔 Event ID: {event.event_id}\n"
+                                f"  📝 {event.description or 'No description'}"
+                            )
+                        response_text = f"Found {result.total_count} events:\n\n" + "\n\n".join(events_list)
+                elif call.name == "edit_event":
+                    if result.success:
+                        response_text = f"Event updated successfully! {result.message}"
+                        if result.event_link:
+                            response_text += f" You can view it here: {result.event_link}"
+                    else:
+                        response_text = f"Failed to update event: {result.message}"
+                elif call.name == "create_placeholder_event":
+                    response_text = f"Placeholder event created successfully! Event ID: {result.event_id}"
+                    if result.event_link:
+                        response_text += f" You can view it here: {result.event_link}"
+                else:
+                    response_text = f"Tool {call.name} executed successfully"
                 
                 speech = AssistantTextMessage(content=response_text, source=self.metadata["type"])
                 await self._model_context.add_message(AssistantMessage(content=response_text, source=self.metadata["type"]))
                 await self.publish_message(speech, topic_id=DefaultTopicId("scheduling_assistant_conversation"))
                 
             await self.publish_message(
-                TerminateMessage(content="Meeting scheduled and added to Google Calendar"),
+                TerminateMessage(content="Calendar operation completed"),
                 topic_id=DefaultTopicId("scheduling_assistant_conversation"),
             )
             return
@@ -360,9 +787,14 @@ class TerminationHandler(DefaultInterventionHandler):
         return self.terminateMessage.content
 
 
-async def run_calendar_agent(model_config: Dict[str, Any], latest_user_input: Optional[str] = None) -> None | str:
+async def run_calendar_agent(model_config: Dict[str, Any], latest_user_input: Optional[str] = None) -> str:
     print("Running calendar agent")
-    return await main(model_config, latest_user_input)
+    result = await main(model_config, latest_user_input)
+    
+    # Always return a string - if result is None, it means the operation was completed
+    if result is None:
+        return "Calendar operation completed successfully."
+    return result
 
 async def main(model_config: Dict[str, Any], latest_user_input: Optional[str] = None) -> None | str:
     """
@@ -390,7 +822,7 @@ async def main(model_config: Dict[str, Any], latest_user_input: Optional[str] = 
     await SlowUserProxyAgent.register(runtime, "User", lambda: SlowUserProxyAgent("User", "I am a user"))
 
     initial_schedule_assistant_message = AssistantTextMessage(
-        content="Hi! How can I help you? I can schedule meetings and add them directly to your Google Calendar.", source="User"
+        content="Hi! How can I help you? I can manage your Google Calendar - schedule new meetings, view existing events, and edit calendar events.", source="User"
     )
     await SchedulingAssistantAgent.register(
         runtime,
