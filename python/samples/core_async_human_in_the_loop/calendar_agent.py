@@ -360,6 +360,10 @@ class TerminationHandler(DefaultInterventionHandler):
         return self.terminateMessage.content
 
 
+async def run_calendar_agent(model_config: Dict[str, Any], latest_user_input: Optional[str] = None) -> None | str:
+    print("Running calendar agent")
+    return await main(model_config, latest_user_input)
+
 async def main(model_config: Dict[str, Any], latest_user_input: Optional[str] = None) -> None | str:
     """
     Asynchronous function that serves as the entry point of the program.

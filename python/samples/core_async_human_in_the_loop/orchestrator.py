@@ -30,7 +30,12 @@ from autogen_core.models import (
     UserMessage,
 )
 
+from calendar_agent import run_calendar_agent
+
 USER_DATA_FILE = "user_data.json"
+
+with open("model_config.yml") as f:
+    model_config = yaml.safe_load(f)
 
 @dataclass
 class TextMessage:
@@ -224,14 +229,8 @@ Provide practical scheduling solutions and time management advice. Today is {dat
         return response.content
 
     async def _call_calendar_agent(self, query: str, context: Dict[str, Any]) -> str:
-        messages = [
-            SystemMessage(content=self.calendar_system_prompt),
-            UserMessage(content=f"User request: {query}\nAdditional context: {json.dumps(context)}", source="user")
-        ]
-        
-        response = await self.model_client.create(messages)
-        print_agent_interaction("CALENDAR AGENT", "Generated scheduling recommendations", False)
-        return response.content
+        print("Calling calendar agent, query: ", query, "context: ", context)
+        return await run_calendar_agent(model_config, query)
 
 @type_subscription("orchestrator_conversation")
 class OrchestratorAgent(RoutedAgent):
