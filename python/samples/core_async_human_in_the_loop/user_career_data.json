@@ -1,0 +1,30 @@
+{
+  "career_goals": [
+    {
+      "title": "Apply to Google Internship",
+      "description": "Complete resume and submit",
+      "priority": "high"
+    }
+  ],
+  "recommendation_requests": [
+    {
+      "professor": "Dr. Smith",
+      "program": "MSAI Northwestern",
+      "deadline": "2025-07-15"
+    }
+  ],
+  "job_deadlines": [
+    {
+      "company": "Capital One",
+      "position": "Data Science Intern",
+      "deadline": "2025-07-10"
+    }
+  ],
+  "skill_development": [
+    {
+      "skill": "Deep Learning",
+      "platform": "Coursera",
+      "frequency_days": 2
+    }
+  ]
+}
