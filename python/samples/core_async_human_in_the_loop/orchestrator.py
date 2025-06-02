@@ -8,10 +8,45 @@ import json
 import os
 import yaml
 import time
+import logging
 from datetime import datetime
 from typing import Any, Dict, Mapping, Optional
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+
+# Configure comprehensive logging for agent interactions
+# Set VERBOSE_LOGGING to False to reduce console output
+VERBOSE_LOGGING = True
+
+# Configure file handler for detailed logging
+file_handler = logging.FileHandler('agent_interactions.log')
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(file_formatter)
+
+# Configure console handler with reduced verbosity
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.WARNING if not VERBOSE_LOGGING else logging.INFO)
+console_formatter = logging.Formatter('%(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(console_formatter)
+
+# Configure root logger
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[file_handler, console_handler]
+)
+
+# Suppress verbose autogen_core logs
+logging.getLogger('autogen_core').setLevel(logging.WARNING)
+logging.getLogger('autogen_core.models').setLevel(logging.WARNING)
+logging.getLogger('autogen_core._routed_agent').setLevel(logging.WARNING)
+logging.getLogger('autogen_core._base_agent').setLevel(logging.WARNING)
+logging.getLogger('autogen_core._agent_runtime').setLevel(logging.WARNING)
+logging.getLogger('autogen_core.model_context').setLevel(logging.WARNING)
+
+# Keep our custom agent interaction logger at INFO level
+agent_logger = logging.getLogger('AgentInteractions')
+agent_logger.setLevel(logging.INFO)
 
 from autogen_core import (
     DefaultInterventionHandler,
@@ -31,6 +66,7 @@ from autogen_core.models import (
 )
 
 from calendar_agent import run_calendar_agent
+from project_agent import main as run_project_agent
 
 USER_DATA_FILE = "user_data.json"
 
@@ -71,8 +107,64 @@ def save_user_data(data):
 def print_agent_interaction(agent_name: str, message: str, is_request: bool = True):
     timestamp = datetime.now().strftime("%H:%M:%S")
     direction = "→" if is_request else "←"
-    print(f"\n🤖 [{timestamp}] {direction} {agent_name.upper()}")
-    print(f"   {message}")
+    console_msg = f"\n🤖 [{timestamp}] {direction} {agent_name.upper()}"
+    console_detail = f"   {message}"
+    
+    print(console_msg)
+    print(console_detail)
+    print("-" * 60)
+    
+    # Enhanced logging for debugging
+    log_msg = f"{direction} {agent_name.upper()}: {message}"
+    agent_logger.info(log_msg)
+
+def log_agent_response_detailed(agent_name: str, request: str, response: str, context: Dict[str, Any] = None):
+    """Log detailed agent interactions for debugging purposes."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    log_entry = {
+        "timestamp": timestamp,
+        "agent": agent_name,
+        "request": request,
+        "response": response,
+        "context_keys": list(context.keys()) if context else [],
+        "response_length": len(response)
+    }
+    
+    # Log to file for detailed analysis
+    agent_logger.info(f"DETAILED_INTERACTION: {json.dumps(log_entry, indent=2)}")
+    
+    # Only show full response in console if verbose logging is enabled
+    if VERBOSE_LOGGING:
+        print(f"\n📋 FULL {agent_name.upper()} RESPONSE:")
+        print("="*80)
+        print(response)
+        print("="*80)
+    else:
+        # Just show a summary in console
+        print(f"\n📋 {agent_name.upper()} Response: {len(response)} chars (logged to file)")
+
+def log_orchestrator_decision(iteration: int, analysis: Dict[str, Any], reasoning: str):
+    """Log orchestrator decision-making process."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    log_entry = {
+        "timestamp": timestamp,
+        "iteration": iteration,
+        "primary_agent": analysis.get("primary_agent"),
+        "secondary_agents": analysis.get("secondary_agents", []),
+        "reasoning": reasoning,
+        "extracted_context_keys": list(analysis.get("extracted_context", {}).keys())
+    }
+    
+    agent_logger.info(f"ORCHESTRATOR_DECISION: {json.dumps(log_entry, indent=2)}")
+    
+    # Simplified console output
+    print(f"\n🧠 ORCHESTRATOR DECISION (Iteration {iteration}):")
+    print(f"   Primary Agent: {analysis.get('primary_agent')}")
+    print(f"   Reasoning: {reasoning[:100]}..." if len(reasoning) > 100 else f"   Reasoning: {reasoning}")
+    if analysis.get("secondary_agents"):
+        print(f"   Secondary Agents: {analysis.get('secondary_agents')}")
     print("-" * 60)
 
 def print_streaming_response(content: str, agent_name: str = "ORCHESTRATOR"):
@@ -268,24 +360,49 @@ Today is {datetime.now().strftime('%Y-%m-%d')}."""
         print_agent_interaction(f"{agent_type.upper()} AGENT", f"Processing: {query[:50]}...")
         
         try:
+            # Log the original request
+            agent_logger.info(f"ROUTING_TO_{agent_type.upper()}: Original query: {query}")
+            
             query = await self.refine_query(query, context)
+            
+            # Log the refined query
+            agent_logger.info(f"ROUTING_TO_{agent_type.upper()}: Refined query: {query}")
+            
             if agent_type == "commute":
-                return await self._call_commute_agent(query, context)
+                response = await self._call_commute_agent(query, context)
             elif agent_type == "project":
-                return await self._call_project_agent(query, context)
+                response = await self._call_project_agent(query, context)
             elif agent_type == "calendar":
-                return await self._call_calendar_agent(query, context)
+                response = await self._call_calendar_agent(query, context)
             else:
-                return f"Unknown agent type: {agent_type}"
+                error_msg = f"Unknown agent type: {agent_type}"
+                agent_logger.error(f"ROUTING_ERROR: {error_msg}")
+                return error_msg
+            
+            # Log detailed response
+            log_agent_response_detailed(agent_type, query, response, context)
+            
+            return response
+            
         except Exception as e:
             error_msg = f"Error routing to {agent_type} agent: {str(e)}"
+            agent_logger.error(f"ROUTING_EXCEPTION_{agent_type.upper()}: {error_msg}")
             print_agent_interaction(f"{agent_type.upper()} AGENT", f"❌ Error: {error_msg}", False)
             return error_msg
 
     async def _call_commute_agent(self, query: str, context: Dict[str, Any]) -> str:
+        # Include conversation context in the system prompt
+        conversation_context = context.get("full_conversation", [])
+        context_summary = ""
+        if conversation_context:
+            recent_context = conversation_context[-5:]  # Last 5 exchanges
+            context_summary = f"\n\nRecent conversation context:\n{chr(10).join(recent_context)}"
+        
+        enhanced_system_prompt = self.commute_system_prompt + context_summary
+        
         messages = [
-            SystemMessage(content=self.commute_system_prompt),
-            UserMessage(content=f"User request: {query}\nAdditional context: {json.dumps(context)}", source="user")
+            SystemMessage(content=enhanced_system_prompt),
+            UserMessage(content=f"User request: {query}\nAdditional context: {json.dumps({k: v for k, v in context.items() if k != 'full_conversation'})}", source="user")
         ]
         
         response = await self.model_client.create(messages)
@@ -293,28 +410,72 @@ Today is {datetime.now().strftime('%Y-%m-%d')}."""
         return response.content
 
     async def _call_project_agent(self, query: str, context: Dict[str, Any]) -> str:
-        messages = [
-            SystemMessage(content=self.project_system_prompt),
-            UserMessage(content=f"User request: {query}\nAdditional context: {json.dumps(context)}", source="user")
-        ]
+        if VERBOSE_LOGGING:
+            print("Calling project agent, query: ", query, "context: ", context)
         
-        response = await self.model_client.create(messages)
+        # Enhance the query with conversation context since project agent doesn't accept context parameter
+        conversation_context = context.get("full_conversation", [])
+        if conversation_context:
+            recent_context = conversation_context[-3:]  # Last 3 exchanges for context
+            context_summary = "\n".join(recent_context)
+            enhanced_query = f"Given recent conversation context:\n{context_summary}\n\nCurrent request: {query}"
+        else:
+            enhanced_query = query
+        
+        response = await run_project_agent(model_config, enhanced_query)
         print_agent_interaction("PROJECT AGENT", "Generated project breakdown", False)
-        return response.content
+        
+        # Handle both string responses and response objects
+        if hasattr(response, 'content'):
+            return response.content
+        else:
+            return str(response)
 
     async def _call_calendar_agent(self, query: str, context: Dict[str, Any]) -> str:
-        print("Calling calendar agent, query: ", query, "context: ", context)
-        return await run_calendar_agent(model_config, query)
+        if VERBOSE_LOGGING:
+            print("Calling calendar agent, query: ", query, "context: ", context)
+        
+        # Enhance the query with conversation context since calendar agent doesn't accept context parameter
+        conversation_context = context.get("full_conversation", [])
+        if conversation_context:
+            recent_context = conversation_context[-3:]  # Last 3 exchanges for context
+            context_summary = "\n".join(recent_context)
+            enhanced_query = f"Given recent conversation context:\n{context_summary}\n\nCurrent request: {query}"
+        else:
+            enhanced_query = query
+        
+        response = await run_calendar_agent(model_config, enhanced_query)
+        if VERBOSE_LOGGING:
+            print("Calendar agent response: ", response)
+        
+        # Handle both string responses and response objects
+        if hasattr(response, 'content'):
+            return response.content
+        else:
+            return str(response)
     
     async def refine_query(self, query: str, context: Dict[str, Any]) -> str:
+        # Include conversation context in query refinement
+        conversation_context = context.get("full_conversation", [])
+        context_summary = ""
+        if conversation_context:
+            recent_context = conversation_context[-5:]  # Last 5 exchanges for context
+            context_summary = f"\n\nRecent conversation context:\n{chr(10).join(recent_context)}"
+        
+        enhanced_prompt = self.refine_query_system_prompt + context_summary
+        
         messages = [
-            SystemMessage(content=self.refine_query_system_prompt),
-            UserMessage(content=f"User request: {query}\nAdditional context: {json.dumps(context)}", source="user")
+            SystemMessage(content=enhanced_prompt),
+            UserMessage(content=f"User request: {query}\nAdditional context: {json.dumps({k: v for k, v in context.items() if k != 'full_conversation'})}", source="user")
         ]
         
         response = await self.model_client.create(messages)
-        print("Refined query response: ", response)
-        return response.content
+        
+        # Handle both string responses and response objects  
+        if hasattr(response, 'content'):
+            return response.content
+        else:
+            return str(response)
 
     async def evaluate_completion(self, original_request: str, conversation_history: list, agent_responses: list) -> Dict[str, Any]:
         """Evaluate if the user request has been fully satisfied."""
@@ -419,7 +580,7 @@ Analyze this request for calendar operations, identify ambiguities, and determin
                     gathered_info["available_slots"] = ["10:00", "11:00", "14:00", "15:00"]
                     
             except Exception as e:
-                print_agent_interaction("INFO GATHERER", f"❌ Error gathering calendar context: {str(e)}", False)
+                print_agent_interaction("INFO GATHERER", f"Error gathering calendar context: {str(e)}", False)
                 gathered_info["available_slots"] = ["10:00", "14:00"]
         
         # Apply suggested defaults for missing information
@@ -516,7 +677,7 @@ class OrchestratorAgent(RoutedAgent):
         
         self._system_messages = [
             SystemMessage(
-                content=f"""You are an intelligent orchestrator for a multi-agent personal assistant system. 
+                content=f"""You are an intelligent orchestrator for a multi-agent personal assistant system that facilitates collaborative problem-solving between specialized agents and users.
 
 **Available Agents:**
 1. **CommuteAgent**: Travel planning, route optimization, traffic analysis, navigation
@@ -529,16 +690,47 @@ class OrchestratorAgent(RoutedAgent):
 - Work: {self._user_data.get('work_address', 'Not provided')}
 - Commute Preference: {self._user_data.get('preferred_commute_mode', 'Not provided')}
 
-**Your Role:**
-- Analyze user requests and determine which agent(s) to engage
-- Extract relevant context for each agent
-- Coordinate multiple agents when needed
-- Provide unified responses combining agent outputs
+**Your Enhanced Role & Capabilities:**
+- **Multi-Agent Coordinator**: Analyze user requests and determine which agent(s) to engage
+- **Context Manager**: Extract and maintain relevant context for each agent interaction
+- **Information Gatherer**: Ask users for additional information when needed to complete tasks
+- **Agent Liaison**: Pass specific requests from agents back to users when clarification is needed
+- **Iterative Problem Solver**: Work with agents across multiple iterations to accomplish complex goals
+- **Conversation Facilitator**: Enable smooth information flow between user, agents, and yourself
 
-**Decision Logic keyword help:**
-- Keywords: 'travel', 'commute', 'directions', 'route', 'traffic' → CommuteAgent
-- Keywords: 'project', 'assignment', 'deadline', 'task', 'goal', 'work' → ProjectAgent  
-- Keywords: 'calendar', 'meeting', 'schedule', 'appointment', 'event' → CalendarAgent
+**Enhanced Decision-Making Process:**
+1. **Analyze** the user's complete request in context of the full conversation
+2. **Identify** what information is needed and what's missing
+3. **Coordinate** with appropriate agents to gather information and solutions
+4. **Request** additional details from users when agents need clarification
+5. **Iterate** between agents and users until the goal is accomplished
+6. **Synthesize** all information into a comprehensive response
+
+**User Interaction Guidelines:**
+- Ask clarifying questions when user requests are ambiguous
+- Request specific information that agents need to complete tasks
+- Explain why additional information is needed
+- Offer multiple options when appropriate
+- Confirm important decisions with users before proceeding
+
+**Agent Coordination Guidelines:**
+- Use agents iteratively - one agent's output can inform another agent's input
+- Pass agent questions/requirements back to users
+- Coordinate multi-step workflows across different agents
+- Gather all necessary information before final execution
+- Always consider the full conversation context when making decisions
+
+**Example Workflows:**
+- Project + Calendar: Use ProjectAgent to break down tasks, then CalendarAgent to schedule them
+- Commute + Calendar: Check calendar for appointments, then plan optimal commute routes
+- Multi-agent consultation: Get input from multiple agents before presenting final recommendation
+
+**Decision Logic Keywords:**
+- 'travel', 'commute', 'directions', 'route', 'traffic' → CommuteAgent
+- 'project', 'assignment', 'deadline', 'task', 'goal', 'work' → ProjectAgent  
+- 'calendar', 'meeting', 'schedule', 'appointment', 'event' → CalendarAgent
+
+**Important**: You can and should ask users for additional information, pass agent requests to users, and coordinate multiple iterations to ensure complete task accomplishment. Don't hesitate to request clarification or additional details.
 
 Today is {datetime.now().strftime("%Y-%m-%d")}."""
             )
@@ -551,15 +743,19 @@ Today is {datetime.now().strftime("%Y-%m-%d")}."""
         
         print_agent_interaction("ORCHESTRATOR", f"Starting smart multi-iteration processing for: {original_request}")
         
+        # Get full conversation history from model context for continuity
+        full_conversation_context = await self._get_conversation_context()
+        
         # Initialize tracking variables
         iteration_count = 0
         max_iterations = 5  # Safety limit to prevent infinite loops
-        conversation_history = [f"User: {original_request}"]
+        conversation_history = full_conversation_context  # Use existing context instead of resetting
         agent_responses = []
         all_response_parts = []
         user_confirmation_needed = False
         
         # First, perform smart analysis to identify if this is an ambiguous calendar request
+        # Pass full conversation context for better analysis
         smart_analysis = await self._agent_manager.analyze_smart_request(original_request, conversation_history)
         
         # If it's an ambiguous calendar request, gather missing information proactively
@@ -589,122 +785,176 @@ Today is {datetime.now().strftime("%Y-%m-%d")}."""
             iteration_count += 1
             print_agent_interaction("ORCHESTRATOR", f"=== ITERATION {iteration_count} ===")
             
-            # Analyze current state and determine next action
-            analysis_prompt = f"""Analyze the current state and determine the next action needed:
+            # Analyze current state and determine next action with full context
+            analysis_prompt = f"""Analyze the current state and determine the next action needed for collaborative problem-solving:
 
 Original User Request: "{original_request}"
 Working Request: "{working_request}"
 Iteration: {iteration_count}
 
-Conversation History:
+FULL Conversation History (for context):
 {chr(10).join(conversation_history)}
 
-Previous Agent Responses:
+Previous Agent Responses (this session):
 {chr(10).join([f"Response {i+1}: {resp[:100]}..." for i, resp in enumerate(agent_responses)])}
 
 Available agents: commute, project, calendar
 
-Determine what action is needed next to satisfy the user request.
-If this is the first iteration, analyze the working request.
-If this is a follow-up iteration, determine what's missing or what failed.
+**Enhanced Analysis Framework:**
+1. **Completeness Check**: Is the user request fully understood? What information is missing?
+2. **Agent Requirements**: What do the agents need to provide a complete solution?
+3. **User Information Needs**: What additional details should we ask the user?
+4. **Multi-Agent Coordination**: Can multiple agents work together on this request?
+5. **Iteration Planning**: What's the optimal next step in the problem-solving process?
+
+**Decision Options:**
+- **Agent Action**: Route to specific agent(s) for information/action
+- **User Query**: Ask user for additional information or clarification
+- **Multi-Agent**: Coordinate between multiple agents
+- **Completion**: Task is complete and ready for final response
+- **Clarification**: Need to clarify requirements with user before proceeding
+
+Consider the FULL conversation context and prioritize user experience.
+If agents need specific information that only the user can provide, request it.
+If multiple agents could contribute, consider using them collaboratively.
 
 Respond with a JSON object:
 {{
-    "primary_agent": "agent_name",
+    "action_type": "agent_action|user_query|multi_agent|completion|clarification",
+    "primary_agent": "agent_name or null",
     "secondary_agents": ["agent_name2"],
-    "reasoning": "explanation of why this agent is needed",
+    "user_question": "specific question to ask user if action_type is user_query",
+    "reasoning": "detailed explanation of why this action is needed",
     "extracted_context": {{
-        "key": "value pairs including any relevant info from previous responses"
+        "key": "value pairs including any relevant info from conversation and previous responses"
     }},
-    "query_focus": "specific aspect to focus on this iteration"
+    "query_focus": "specific aspect to focus on this iteration",
+    "missing_info": ["list of information still needed"],
+    "coordination_plan": "how agents/user will work together"
 }}
 
-If no further action is needed, use "none" for primary_agent."""
+If no further action is needed, use "completion" for action_type."""
 
             try:
-                # Get analysis for this iteration
+                # Get analysis for this iteration with full context
                 analysis_response = await self._model_client.create([
-                    SystemMessage(content="You are a request analyzer. Always respond with valid JSON."),
+                    SystemMessage(content="You are a request analyzer for a collaborative multi-agent system. Always respond with valid JSON. Consider the full conversation context and enable user interaction when needed."),
                     UserMessage(content=analysis_prompt, source="system")
                 ])
                 
                 analysis = json.loads(analysis_response.content)
+                action_type = analysis.get("action_type", "agent_action")
                 primary_agent = analysis.get("primary_agent")
                 secondary_agents = analysis.get("secondary_agents", [])
+                user_question = analysis.get("user_question")
                 extracted_context = analysis.get("extracted_context", {})
+                extracted_context["full_conversation"] = conversation_history  # Include full context
                 reasoning = analysis.get("reasoning", "")
                 query_focus = analysis.get("query_focus", working_request)
+                missing_info = analysis.get("missing_info", [])
+                coordination_plan = analysis.get("coordination_plan", "")
                 
-                print_agent_interaction("ORCHESTRATOR", f"Iteration {iteration_count} Analysis: {reasoning}")
+                # Log orchestrator decision
+                log_orchestrator_decision(iteration_count, analysis, reasoning)
                 
-                # If no agent needed, break the loop
-                if not primary_agent or primary_agent == "none":
-                    print_agent_interaction("ORCHESTRATOR", "No further agent action needed")
+                # Handle different action types
+                if action_type == "completion":
+                    print_agent_interaction("ORCHESTRATOR", "✅ Analysis indicates task is complete")
                     break
                 
-                # Execute agent calls for this iteration
-                iteration_responses = []
-                
-                if primary_agent:
-                    try:
-                        primary_response = await self._agent_manager.route_to_agent(
-                            primary_agent, query_focus, extracted_context
+                elif action_type == "user_query" or action_type == "clarification":
+                    if user_question:
+                        print_agent_interaction("ORCHESTRATOR", f"👤 Requesting user input: {user_question}")
+                        # Publish a message requesting user input
+                        await self.publish_message(
+                            GetSlowUserMessage(content=f"I need some additional information to help you better:\n\n{user_question}\n\nPlease provide the requested details so I can coordinate with the appropriate agents to accomplish your goal."),
+                            topic_id=DefaultTopicId("orchestrator_conversation")
                         )
-                        iteration_responses.append(primary_response)
-                        conversation_history.append(f"Orchestrator → {primary_agent.title()}: {query_focus}")
-                        conversation_history.append(f"{primary_agent.title()} Response: {primary_response[:100]}...")
-                        
-                    except Exception as e:
-                        error_msg = f"Error in {primary_agent} agent: {str(e)}"
-                        iteration_responses.append(error_msg)
-                        conversation_history.append(f"Error: {error_msg}")
-                        print_agent_interaction("ORCHESTRATOR", f"❌ {error_msg}", False)
+                        # Add to conversation history and continue to next iteration
+                        conversation_history.append(f"Orchestrator requested: {user_question}")
+                        continue
+                    else:
+                        print_agent_interaction("ORCHESTRATOR", "⚠️ User query needed but no question specified")
+                        break
                 
-                # Execute secondary agents if specified
-                for secondary_agent in secondary_agents:
-                    if secondary_agent != primary_agent:
+                elif action_type == "agent_action" or action_type == "multi_agent":
+                    # Execute agent calls for this iteration
+                    iteration_responses = []
+                    
+                    if primary_agent:
                         try:
-                            secondary_response = await self._agent_manager.route_to_agent(
-                                secondary_agent, query_focus, extracted_context
+                            primary_response = await self._agent_manager.route_to_agent(
+                                primary_agent, query_focus, extracted_context
                             )
-                            secondary_formatted = f"\n**Additional {secondary_agent.title()} Information:**\n{secondary_response}"
-                            iteration_responses.append(secondary_formatted)
-                            conversation_history.append(f"Orchestrator → {secondary_agent.title()}: {query_focus}")
-                            conversation_history.append(f"{secondary_agent.title()} Response: {secondary_response[:100]}...")
+                            iteration_responses.append(primary_response)
+                            conversation_history.append(f"Orchestrator → {primary_agent.title()}: {query_focus}")
+                            conversation_history.append(f"{primary_agent.title()} Response: {primary_response[:100]}...")
                             
                         except Exception as e:
-                            error_msg = f"Error in {secondary_agent} agent: {str(e)}"
-                            iteration_responses.append(f"\n**{secondary_agent.title()} Error:** {error_msg}")
+                            error_msg = f"Error in {primary_agent} agent: {str(e)}"
+                            iteration_responses.append(error_msg)
                             conversation_history.append(f"Error: {error_msg}")
                             print_agent_interaction("ORCHESTRATOR", f"❌ {error_msg}", False)
-                
-                # Store responses from this iteration
-                if iteration_responses:
-                    combined_response = "\n\n".join(iteration_responses)
-                    agent_responses.append(combined_response)
-                    all_response_parts.extend(iteration_responses)
-                
-                # Evaluate if the request is now complete
-                evaluation = await self._agent_manager.evaluate_completion(
-                    original_request, conversation_history, agent_responses
-                )
-                
-                # If request is complete or confidence is high, break
-                if evaluation.get("is_complete", False) or evaluation.get("confidence", 0) > 0.9:
-                    print_agent_interaction("ORCHESTRATOR", f"✅ Request completed after {iteration_count} iterations")
-                    break
-                elif iteration_count >= max_iterations - 1:
-                    print_agent_interaction("ORCHESTRATOR", f"⚠️ Reached max iterations ({max_iterations}), completing")
-                    break
-                else:
-                    next_action = evaluation.get("next_action_needed", "")
-                    print_agent_interaction("ORCHESTRATOR", f"Continuing to iteration {iteration_count + 1}: {next_action}")
                     
-                    # Add the evaluation result to conversation history for next iteration
-                    conversation_history.append(f"Evaluation: {evaluation.get('reasoning', '')}")
-                    if next_action:
-                        conversation_history.append(f"Next needed: {next_action}")
+                    # Execute secondary agents if specified
+                    for secondary_agent in secondary_agents:
+                        if secondary_agent != primary_agent:
+                            try:
+                                secondary_response = await self._agent_manager.route_to_agent(
+                                    secondary_agent, query_focus, extracted_context
+                                )
+                                secondary_formatted = f"\n**Additional {secondary_agent.title()} Information:**\n{secondary_response}"
+                                iteration_responses.append(secondary_formatted)
+                                conversation_history.append(f"Orchestrator → {secondary_agent.title()}: {query_focus}")
+                                conversation_history.append(f"{secondary_agent.title()} Response: {secondary_response[:100]}...")
+                                
+                            except Exception as e:
+                                error_msg = f"Error in {secondary_agent} agent: {str(e)}"
+                                iteration_responses.append(f"\n**{secondary_agent.title()} Error:** {error_msg}")
+                                conversation_history.append(f"Error: {error_msg}")
+                                print_agent_interaction("ORCHESTRATOR", f"❌ {error_msg}", False)
+                    
+                    # Store responses from this iteration
+                    if iteration_responses:
+                        combined_response = "\n\n".join(iteration_responses)
+                        agent_responses.append(combined_response)
+                        all_response_parts.extend(iteration_responses)
                         
+                        # Log coordination plan if provided
+                        if coordination_plan:
+                            agent_logger.info(f"COORDINATION_PLAN_{iteration_count}: {coordination_plan}")
+                    
+                    # After agent execution, evaluate if the request is now complete
+                    if action_type in ["agent_action", "multi_agent"] and agent_responses:
+                        evaluation = await self._agent_manager.evaluate_completion(
+                            original_request, conversation_history, agent_responses
+                        )
+                        
+                        # If request is complete or confidence is high, break
+                        if evaluation.get("is_complete", False) or evaluation.get("confidence", 0) > 0.9:
+                            print_agent_interaction("ORCHESTRATOR", f"✅ Request completed after {iteration_count} iterations")
+                            break
+                        elif iteration_count >= max_iterations - 1:
+                            print_agent_interaction("ORCHESTRATOR", f"⚠️ Reached max iterations ({max_iterations}), completing")
+                            break
+                        else:
+                            next_action = evaluation.get("next_action_needed", "")
+                            print_agent_interaction("ORCHESTRATOR", f"Continuing to iteration {iteration_count + 1}: {next_action}")
+                            
+                            # Add the evaluation result to conversation history for next iteration
+                            conversation_history.append(f"Evaluation: {evaluation.get('reasoning', '')}")
+                            if next_action:
+                                conversation_history.append(f"Next needed: {next_action}")
+                    
+                    # Check iteration limit for non-agent actions too
+                    elif iteration_count >= max_iterations - 1:
+                        print_agent_interaction("ORCHESTRATOR", f"⚠️ Reached max iterations ({max_iterations}), completing")
+                        break
+                
+                else:
+                    print_agent_interaction("ORCHESTRATOR", f"⚠️ Unknown action type: {action_type}")
+                    break
+            
             except Exception as e:
                 error_msg = f"Error in iteration {iteration_count}: {str(e)}"
                 print_agent_interaction("ORCHESTRATOR", f"❌ {error_msg}", False)
@@ -722,7 +972,7 @@ If no further action is needed, use "none" for primary_agent."""
         
         # Prepare final response
         if not all_response_parts:
-            response_content = await self._generate_general_response(original_request)
+            response_content = await self._generate_general_response(original_request, conversation_history)
         else:
             # Combine all responses with iteration markers
             if len(agent_responses) == 1:
@@ -762,11 +1012,44 @@ Please let me know what adjustments you'd like to make!"""
         await self._model_context.add_message(AssistantMessage(content=response_content, source=self.metadata["type"]))
         await self.publish_message(speech, topic_id=DefaultTopicId("orchestrator_conversation"))
 
-    async def _generate_general_response(self, user_input: str) -> str:
-        messages = self._system_messages + [
-            UserMessage(content=f"User is asking: '{user_input}'. Provide helpful guidance about what you can assist with.", source="user")
-        ]
+    async def _get_conversation_context(self) -> list:
+        """Extract conversation history from model context for continuity."""
+        try:
+            # Get the messages from the model context
+            messages = self._model_context._messages
+            context_history = []
+            
+            for msg in messages:
+                if isinstance(msg, UserMessage):
+                    context_history.append(f"User: {msg.content}")
+                elif isinstance(msg, AssistantMessage):
+                    context_history.append(f"Assistant: {msg.content}")
+                elif isinstance(msg, SystemMessage):
+                    # Skip system messages in conversation history to avoid clutter
+                    continue
+            
+            return context_history
+        except Exception as e:
+            print_agent_interaction("ORCHESTRATOR", f"Warning: Could not extract conversation context: {str(e)}", False)
+            return []
+
+    async def _generate_general_response(self, user_input: str, conversation_history: list = None) -> str:
+        messages = self._system_messages.copy()
         
+        # Include conversation context if available
+        if conversation_history:
+            context_summary = "\n".join(conversation_history[-5:])  # Last 5 exchanges
+            context_message = UserMessage(
+                content=f"Recent conversation context:\n{context_summary}\n\nCurrent user request: '{user_input}'. Provide helpful guidance considering the conversation context.",
+                source="user"
+            )
+        else:
+            context_message = UserMessage(
+                content=f"User is asking: '{user_input}'. Provide helpful guidance about what you can assist with.",
+                source="user"
+            )
+        
+        messages.append(context_message)
         response = await self._model_client.create(messages)
         return response.content
 
