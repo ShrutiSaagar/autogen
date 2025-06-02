@@ -119,7 +119,7 @@ class SessionLogger:
         """Log errors with context."""
         timestamp = datetime.now()
         
-        log_entry = f"""### ❌ Error Occurred
+        log_entry = f"""### Error Occurred
 **Time:** {timestamp.strftime("%H:%M:%S")} | **Type:** {error_type}
 
 #### 🚨 Error Message

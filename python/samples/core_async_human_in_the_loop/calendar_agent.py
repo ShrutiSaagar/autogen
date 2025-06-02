@@ -776,7 +776,7 @@ When creating placeholder events:
 I will always respond using **markdown formatting** with:
 - 📊 **Clear headers and sections**
 - ✅ **Success indicators** with green checkmarks
-- ❌ **Error indicators** with red X marks
+- **Error indicators** with red X marks
 - 🔗 **Clickable links** to calendar events
 - 📈 **Organized lists** and bullet points
 - 🎯 **Emojis** for visual clarity and engagement
@@ -830,7 +830,7 @@ If there are missing parameters, I will ask for them or create reasonable placeh
                         if result.event_link:
                             response_text += f"\n\n🔗 **View updated event:** {result.event_link}"
                     else:
-                        response_text = f"❌ **Failed to update event:** {result.message}"
+                        response_text = f"**Failed to update event:** {result.message}"
                 elif call.name == "create_placeholder_event":
                     response_text = f"🔖 **Placeholder event created successfully!** \n\n📋 **Event ID:** `{result.event_id}`"
                     if result.event_link:
@@ -849,7 +849,7 @@ If there are missing parameters, I will ask for them or create reasonable placeh
                             response_text += f"{i}. 📋 **Event ID:** `{event.event_id}`\n   🔗 **Link:** {event.event_link}\n\n"
                     
                     if result.failed_events:
-                        response_text += f"### ❌ **Failed Events:**\n"
+                        response_text += f"### **Failed Events:**\n"
                         for i, failed in enumerate(result.failed_events, 1):
                             response_text += f"{i}. 📅 **{failed.get('event_summary', 'Unknown')}** on {failed.get('event_date', 'Unknown')} at {failed.get('event_time', 'Unknown')}\n"
                             response_text += f"   ⚠️ **Error:** {failed.get('error_message', 'Unknown error')}\n\n"

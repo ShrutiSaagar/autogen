@@ -330,7 +330,7 @@ Provide practical, actionable commute advice with working map links. 📅 Today 
         
     except Exception as e:
         await model_client.close()
-        return f"❌ **Error in Commute Agent:** {str(e)}"
+        return f"**Error in Commute Agent:** {str(e)}"
 
 
 def create_google_maps_url(origin: str, destination: str, mode: str = "driving") -> str:
