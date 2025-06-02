@@ -740,37 +740,50 @@ class SchedulingAssistantAgent(RoutedAgent):
         self._system_messages = [
             SystemMessage(
                 content=f"""
-I am a helpful AI assistant that helps with calendar management.
-I can:
-1. Schedule new meetings and add them directly to your Google Calendar
-2. View existing events in your calendar for a specific date range
-3. Edit existing calendar events (modify time, location, description, etc.)
-4. Create placeholder events with default values when information is incomplete
-5. Create multiple events in a single batch operation for efficiency
+🗓️ **I am a helpful AI assistant that helps with calendar management.**
 
-For scheduling, I need details like date, time, recipient, and optionally duration, summary, description, location, and attendee email.
-For viewing events, I need a date range (start and end dates) or I will get events for the previous 7 days and the next 7 days by default.
-For editing events, I need the event ID and the fields you want to change.
-For placeholder events, I can create events with reasonable defaults and mark them for later confirmation.
-For multiple events, I can create several events at once when provided with a list of event details.
+## 🛠️ **My Capabilities:**
+1. 📅 **Schedule new meetings** and add them directly to your Google Calendar
+2. 👀 **View existing events** in your calendar for a specific date range
+3. ✏️ **Edit existing calendar events** (modify time, location, description, etc.)
+4. 📝 **Create placeholder events** with default values when information is incomplete
+5. 🔄 **Create multiple events** in a single batch operation for efficiency
 
-**Multiple Events Creation:**
-When users request multiple meetings or events (e.g., "schedule 3 meetings", "create events for the week", "batch schedule"), I will use the multiple events tool to create them all at once. This is more efficient than creating individual events and provides a comprehensive summary of the batch operation.
+## 📋 **Information I Need:**
+- **For scheduling:** date, time, recipient, and optionally duration, summary, description, location, and attendee email
+- **For viewing events:** date range (start and end dates) or I will get events for the previous 7 days and the next 7 days by default
+- **For editing events:** event ID and the fields you want to change
+- **For placeholder events:** I can create events with reasonable defaults and mark them for later confirmation
+- **For multiple events:** I can create several events at once when provided with a list of event details
 
+## 🔄 **Multiple Events Creation:**
+When users request multiple meetings or events (e.g., "schedule 3 meetings", "create events for the week", "batch schedule"), I will use the **multiple events tool** to create them all at once. This is more efficient than creating individual events and provides a comprehensive summary of the batch operation.
+
+### 📤 **Expected Format from Orchestrator:**
 I expect the orchestrator to provide complete event details in the following format for multiple events:
-- A list of events with all necessary details (date, time, duration, recipient, summary, etc.)
-- A batch description explaining the purpose of these events
-- All events should be fully specified to avoid the need for additional clarification
+- ✅ A **list of events** with all necessary details (date, time, duration, recipient, summary, etc.)
+- 📄 A **batch description** explaining the purpose of these events
+- 🎯 **All events should be fully specified** to avoid the need for additional clarification
 
+## 🔖 **Placeholder Events Guidelines:**
 When creating placeholder events:
-- I'll use working hours (9 AM - 6 PM) for default times
-- I'll set reasonable durations (30-60 minutes)
-- I'll mark recipients and locations as "TBD" if not specified
-- The event will be clearly marked as a placeholder needing confirmation
+- ⏰ I'll use **working hours (9 AM - 6 PM)** for default times
+- ⏱️ I'll set **reasonable durations (30-60 minutes)**
+- 👥 I'll mark recipients and locations as **"TBD"** if not specified
+- ⚠️ The event will be **clearly marked as a placeholder** needing confirmation
+
+## 📝 **Response Format:**
+I will always respond using **markdown formatting** with:
+- 📊 **Clear headers and sections**
+- ✅ **Success indicators** with green checkmarks
+- ❌ **Error indicators** with red X marks
+- 🔗 **Clickable links** to calendar events
+- 📈 **Organized lists** and bullet points
+- 🎯 **Emojis** for visual clarity and engagement
 
 If there are missing parameters, I will ask for them or create reasonable placeholders.
 
-Today's date is {datetime.datetime.now().strftime("%Y-%m-%d")}
+📅 **Today's date is {datetime.datetime.now().strftime("%Y-%m-%d")}**
 """
             )
         ]
@@ -794,55 +807,56 @@ Today's date is {datetime.datetime.now().strftime("%Y-%m-%d")}
                 
                 # Handle different tool responses
                 if call.name == "schedule_meeting":
-                    response_text = f"Meeting scheduled successfully! You can view it here: {result.event_link}"
+                    response_text = f"✅ **Meeting scheduled successfully!** 📅\n\n🔗 **View your event:** {result.event_link}"
                 elif call.name == "get_events" or call.name == "get_events_approx":
                     if result.total_count == 0:
-                        response_text = f"No events found for the specified date range."
+                        response_text = f"📭 **No events found** for the specified date range."
                     else:
                         events_list = []
                         for event in result.events:
                             attendees_str = ", ".join(event.attendees) if event.attendees else "None"
                             events_list.append(
-                                f"• **{event.summary}**\n"
-                                f"  📅 {event.start_time} - {event.end_time}\n"
-                                f"  📍 {event.location or 'No location'}\n"
-                                f"  👥 Attendees: {attendees_str}\n"
-                                f"  🆔 Event ID: {event.event_id}\n"
-                                f"  📝 {event.description or 'No description'}"
+                                f"📋 **{event.summary}**\n"
+                                f"   📅 **When:** {event.start_time} - {event.end_time}\n"
+                                f"   📍 **Location:** {event.location or 'No location'}\n"
+                                f"   👥 **Attendees:** {attendees_str}\n"
+                                f"   🆔 **Event ID:** `{event.event_id}`\n"
+                                f"   📝 **Description:** {event.description or 'No description'}"
                             )
-                        response_text = f"Found {result.total_count} events:\n\n" + "\n\n".join(events_list)
+                        response_text = f"📊 **Found {result.total_count} events:**\n\n" + "\n\n".join(events_list)
                 elif call.name == "edit_event":
                     if result.success:
-                        response_text = f"Event updated successfully! {result.message}"
+                        response_text = f"✅ **Event updated successfully!** {result.message} 🎉"
                         if result.event_link:
-                            response_text += f" You can view it here: {result.event_link}"
+                            response_text += f"\n\n🔗 **View updated event:** {result.event_link}"
                     else:
-                        response_text = f"Failed to update event: {result.message}"
+                        response_text = f"❌ **Failed to update event:** {result.message}"
                 elif call.name == "create_placeholder_event":
-                    response_text = f"Placeholder event created successfully! Event ID: {result.event_id}"
+                    response_text = f"🔖 **Placeholder event created successfully!** \n\n📋 **Event ID:** `{result.event_id}`"
                     if result.event_link:
-                        response_text += f" You can view it here: {result.event_link}"
+                        response_text += f"\n🔗 **View event:** {result.event_link}"
+                    response_text += f"\n\n⚠️ **Note:** This is a placeholder event that needs confirmation!"
                 elif call.name == "create_multiple_events":
-                    response_text = f"**Multiple Events Creation Summary:**\n\n"
+                    response_text = f"## 🔄 **Multiple Events Creation Summary**\n\n"
                     response_text += f"📊 **Results:** {result.total_created} events created successfully"
                     if result.total_failed > 0:
                         response_text += f", {result.total_failed} events failed"
                     response_text += f"\n\n"
                     
                     if result.created_events:
-                        response_text += f"✅ **Successfully Created Events:**\n"
+                        response_text += f"### ✅ **Successfully Created Events:**\n"
                         for i, event in enumerate(result.created_events, 1):
-                            response_text += f"{i}. Event ID: {event.event_id}\n   Link: {event.event_link}\n"
+                            response_text += f"{i}. 📋 **Event ID:** `{event.event_id}`\n   🔗 **Link:** {event.event_link}\n\n"
                     
                     if result.failed_events:
-                        response_text += f"\n**Failed Events:**\n"
+                        response_text += f"### ❌ **Failed Events:**\n"
                         for i, failed in enumerate(result.failed_events, 1):
-                            response_text += f"{i}. {failed.get('event_summary', 'Unknown')} on {failed.get('event_date', 'Unknown')} at {failed.get('event_time', 'Unknown')}\n"
-                            response_text += f"   Error: {failed.get('error_message', 'Unknown error')}\n"
+                            response_text += f"{i}. 📅 **{failed.get('event_summary', 'Unknown')}** on {failed.get('event_date', 'Unknown')} at {failed.get('event_time', 'Unknown')}\n"
+                            response_text += f"   ⚠️ **Error:** {failed.get('error_message', 'Unknown error')}\n\n"
                     
-                    response_text += f"\n📝 **Summary:** {result.batch_summary}"
+                    response_text += f"📝 **Summary:** {result.batch_summary}"
                 else:
-                    response_text = f"Tool {call.name} executed successfully"
+                    response_text = f"✅ **Tool {call.name} executed successfully** 🎉"
                 
                 speech = AssistantTextMessage(content=response_text, source=self.metadata["type"])
                 await self._model_context.add_message(AssistantMessage(content=response_text, source=self.metadata["type"]))

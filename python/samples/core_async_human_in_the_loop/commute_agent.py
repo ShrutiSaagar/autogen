@@ -21,11 +21,15 @@ a more complex system, it may be necessary to save the state at multiple points 
 system can be rehydrated to the correct state.
 Additionally, we use "human"-in-loop in this example, but the same principles can be applied to any
 slow external system that the agent needs to interact with.
+
+Commute Agent for Multi-Agent Personal Assistant
+Handles route planning, traffic analysis, and navigation assistance
 """
 
 import asyncio
 import datetime
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional
@@ -272,78 +276,111 @@ class TerminationHandler(DefaultInterventionHandler):
         return self.terminateMessage.content
 
 
-async def main(model_config: Dict[str, Any], latest_user_input: Optional[str] = None) -> None | str:
+async def main(model_config: Dict[str, Any], latest_user_input: Optional[str] = None) -> str:
     """
-    Asynchronous function that serves as the entry point of the program.
-    This function initializes the necessary components for the program and registers the user and scheduling assistant agents.
-    If a user input is provided, it loads the state (from some persistent layer) and publishes the user input message to
-    the scheduling assistant. Otherwise, it adds an initial message to the scheduling assistant's history and publishes it
-    to the message queue. The program then starts running and stops when either the termination handler is triggered
-    or user input is needed. Finally, it saves the state and returns the user input needed if any.
-
-    Args:
-        latest_user_input (Optional[str]): The latest user input. Defaults to None.
-
-    Returns:
-        None or str: The user input needed if the program requires user input, otherwise None.
+    Main function for the commute agent.
+    Handles route planning and navigation requests.
     """
-    global state_persister
-    print("--------------------------------MAIN Commute Agent--------------------------------")
-
-    model_client = ChatCompletionClient.load_component(model_config)
-
-    termination_handler = TerminationHandler()
-    needs_user_input_handler = NeedsUserInputHandler()
-    runtime = SingleThreadedAgentRuntime(intervention_handlers=[needs_user_input_handler, termination_handler])
-
-    await SlowUserProxyAgent.register(runtime, "User", lambda: SlowUserProxyAgent("User", "I am a user"))
-
-    initial_schedule_assistant_message = AssistantTextMessage(
-            content="Hi! I can help you find the fastest route. What's your current location?", source="User"
-    )
+    if latest_user_input is None:
+        return "🚗 **Commute Agent Ready** - I can help you with route planning and navigation!"
     
-    google_maps_api_key = model_config.get("google_maps_api_key")
+    # Load model client
+    model_client = ChatCompletionClient.load_component(model_config)
+    
+    # Enhanced system prompt with map link instructions
+    system_prompt = f"""🚗 **You are a commute planning specialist.** Help users with:
+- 🗺️ **Route optimization** and travel time calculations
+- 🚦 **Traffic analysis** and alternative routes  
+- 🧭 **Navigation assistance** between locations
+- 🚌 **Transport mode recommendations**
 
-    await CommuteAssistantAgent.register(
-    runtime,
-    "SchedulingAssistant",
-    lambda: CommuteAssistantAgent(
-        "SchedulingAssistant",
-        description="AI that helps you schedule meetings",
-        model_client=model_client,
-        initial_message=initial_schedule_assistant_message,
-        google_maps_api_key=google_maps_api_key,
-    ),
-)
+## 📝 **Response Guidelines:**
+Always respond using **markdown formatting** with:
+- 📊 **Clear headers and sections**
+- 🗺️ **Map links** and navigation URLs when possible
+- ⏱️ **Time estimates** with traffic considerations
+- 🚦 **Traffic alerts** and road conditions
+- 🛣️ **Alternative routes** with pros/cons
+- 📍 **Step-by-step directions** when helpful
+- 🎯 **Emojis** for visual clarity
 
-    runtime_initiation_message: UserTextMessage | AssistantTextMessage
-    if latest_user_input is not None:
-        runtime_initiation_message = UserTextMessage(content=latest_user_input, source="User")
-    else:
-        runtime_initiation_message = initial_schedule_assistant_message
-    state = state_persister.load_content()
+**🚨 IMPORTANT:** When providing directions, ALWAYS include **clickable map links**:
+- Use Google Maps format: `https://www.google.com/maps/dir/[origin]/[destination]`
+- Format as: 🗺️ **[View Route on Google Maps](URL)**
+- Replace spaces with `+` in URLs
+- Provide Apple Maps alternative when possible: `http://maps.apple.com/?saddr=[origin]&daddr=[destination]`
 
-    if state:
-        await runtime.load_state(state)
-    await runtime.publish_message(
-        runtime_initiation_message,
-        DefaultTopicId("commute_agent_conversation"),
-    )
+## 🎯 **Map Link Examples:**
+- From "Home" to "Office": 🗺️ **[View Route](https://www.google.com/maps/dir/Home/Office)**
+- Current location to destination: 🗺️ **[Navigate Now](https://www.google.com/maps/dir/Current+Location/[destination])**
 
-    runtime.start()
-    await runtime.stop_when(lambda: termination_handler.is_terminated or needs_user_input_handler.needs_user_input)
-    await model_client.close()
+Provide practical, actionable commute advice with working map links. 📅 Today is {datetime.datetime.now().strftime('%Y-%m-%d')}.
+"""
 
-    user_input_needed = None
-    if needs_user_input_handler.user_input_content is not None:
-        user_input_needed = needs_user_input_handler.user_input_content
-    elif termination_handler.is_terminated:
-        print("Terminated - ", termination_handler.termination_msg)
+    try:
+        messages = [
+            SystemMessage(content=system_prompt),
+            UserMessage(content=latest_user_input, source="user")
+        ]
+        
+        response = await model_client.create(messages)
+        await model_client.close()
+        
+        return response.content
+        
+    except Exception as e:
+        await model_client.close()
+        return f"❌ **Error in Commute Agent:** {str(e)}"
 
-    state_to_persist = await runtime.save_state()
-    state_persister.save_content(state_to_persist)
 
-    return user_input_needed
+def create_google_maps_url(origin: str, destination: str, mode: str = "driving") -> str:
+    """Create a Google Maps URL for directions."""
+    origin_encoded = origin.replace(" ", "+")
+    destination_encoded = destination.replace(" ", "+")
+    
+    mode_map = {
+        "driving": "driving",
+        "walking": "walking", 
+        "transit": "transit",
+        "bicycling": "bicycling"
+    }
+    
+    travel_mode = mode_map.get(mode.lower(), "driving")
+    return f"https://www.google.com/maps/dir/{origin_encoded}/{destination_encoded}?travelmode={travel_mode}"
+
+
+def create_apple_maps_url(origin: str, destination: str) -> str:
+    """Create an Apple Maps URL for directions."""
+    origin_encoded = origin.replace(" ", "+")
+    destination_encoded = destination.replace(" ", "+")
+    return f"http://maps.apple.com/?saddr={origin_encoded}&daddr={destination_encoded}"
+
+
+def format_route_response(origin: str, destination: str, travel_mode: str = "driving", 
+                         estimated_time: str = "Unknown", distance: str = "Unknown") -> str:
+    """Format a standardized route response with map links."""
+    
+    google_url = create_google_maps_url(origin, destination, travel_mode)
+    apple_url = create_apple_maps_url(origin, destination)
+    
+    response = f"""## 🗺️ **Route: {origin} → {destination}**
+
+### 📊 **Trip Details**
+- 🚗 **Travel Mode:** {travel_mode.title()}
+- ⏱️ **Estimated Time:** {estimated_time}
+- 📏 **Distance:** {distance}
+
+### 🗺️ **Navigation Links**
+- 🗺️ **[View Route on Google Maps]({google_url})**
+- 🍎 **[Open in Apple Maps]({apple_url})**
+
+### 💡 **Tips**
+- 🚦 Check traffic conditions before departing
+- 🎯 Consider alternative routes during peak hours
+- ⛽ Plan for fuel/charging stops on longer trips
+"""
+    
+    return response
 
 
 async def ainput(prompt: str = "") -> str:
@@ -351,48 +388,10 @@ async def ainput(prompt: str = "") -> str:
         return await asyncio.get_event_loop().run_in_executor(executor, input, prompt)
 
 if __name__ == "__main__":
-    import os
-    import webbrowser  # To open maps link automatically
-    import googlemaps  # For Directions API
-
+    # Test the commute agent
     with open("model_config.yml") as f:
         model_config = yaml.safe_load(f)
-
-    # Load Google Maps API key from config
-    gmaps_api_key = model_config.get("google_maps_api_key")
-    if not gmaps_api_key:
-        raise ValueError("Google Maps API key is missing in model_config.yml")
-
-    gmaps_client = googlemaps.Client(key=gmaps_api_key)
-
-    def get_user_input(question_for_user: str):
-        print("--------------------------QUESTION_FOR_USER--------------------------")
-        print(question_for_user)
-        print("---------------------------------------------------------------------")
-        return input("Enter your input: ")
-
-    async def run_main(question_for_user: str | None = None):
-        if question_for_user:
-            user_input = get_user_input(question_for_user)
-        else:
-            user_input = None
-
-        user_input_needed = await main(model_config, user_input)
-
-        if user_input_needed:
-            await run_main(user_input_needed)
-        else:
-            # After all steps are complete, optionally open Google Maps
-            print("Would you like me to open Google Maps for navigation? (y/n)")
-            choice = input().strip().lower()
-            if choice == "y":
-                origin = model_config.get("last_known_location", "Current Location")
-                destination = model_config.get("last_destination")
-                if origin and destination:
-                    map_url = f"https://www.google.com/maps/dir/?api=1&origin= {origin}&destination={destination}"
-                    print(f"Opening Google Maps: {map_url}")
-                    webbrowser.open(map_url)
-                else:
-                    print("Cannot open map: Missing origin or destination.")
-
-    asyncio.run(run_main())
+    
+    test_query = "How do I get from San Francisco to Los Angeles?"
+    result = asyncio.run(main(model_config, test_query))
+    print(result)

@@ -14,6 +14,9 @@ from typing import Any, Dict, Mapping, Optional
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+# Import session logger
+from session_logger import get_session_logger, start_new_session, end_current_session
+
 # Configure comprehensive logging for agent interactions
 # Set VERBOSE_LOGGING to False to reduce console output
 VERBOSE_LOGGING = True
@@ -254,42 +257,74 @@ class AgentManager:
         self.model_client = model_client
         self.user_data = user_data
         
-        self.commute_system_prompt = f"""You are a commute planning specialist. Help users with:
-- Route optimization and travel time calculations
-- Traffic analysis and alternative routes  
-- Navigation assistance between locations
-- Transport mode recommendations
+        self.commute_system_prompt = f"""🚗 **You are a commute planning specialist.** Help users with:
+- 🗺️ **Route optimization** and travel time calculations
+- 🚦 **Traffic analysis** and alternative routes  
+- 🧭 **Navigation assistance** between locations
+- 🚌 **Transport mode recommendations**
 
-User Context:
-- Home: {user_data.get('home_address', 'Not provided')}
-- Work: {user_data.get('work_address', 'Not provided')}
-- University: {user_data.get('university_address', 'Not provided')}
-- Preferred Transport: {user_data.get('preferred_commute_mode', 'driving')}
+## 👤 **User Context:**
+- 🏠 **Home:** {user_data.get('home_address', 'Not provided')}
+- 🏢 **Work:** {user_data.get('work_address', 'Not provided')}
+- 🎓 **University:** {user_data.get('university_address', 'Not provided')}
+- 🚗 **Preferred Transport:** {user_data.get('preferred_commute_mode', 'driving')}
 
-Provide practical, actionable commute advice. Today is {datetime.now().strftime('%Y-%m-%d')}."""
+## 📝 **Response Guidelines:**
+Always respond using **markdown formatting** with:
+- 📊 **Clear headers and sections**
+- 🗺️ **Map links** and navigation URLs when possible
+- ⏱️ **Time estimates** with traffic considerations
+- 🚦 **Traffic alerts** and road conditions
+- 🛣️ **Alternative routes** with pros/cons
+- 📍 **Step-by-step directions** when helpful
+- 🎯 **Emojis** for visual clarity
 
-        self.project_system_prompt = f"""You are a project management specialist. Help users with:
-- Breaking down complex projects into manageable tasks
-- Creating realistic timelines and milestones
-- Setting priorities and deadlines
-- Academic and work project planning
+**Important:** When providing directions, always include **clickable map links** (Google Maps, Apple Maps, etc.) so users can easily navigate. Format links as: 🗺️ **[View on Google Maps](URL)**
 
-Provide structured, actionable project management advice. Today is {datetime.now().strftime('%Y-%m-%d')}."""
+Provide practical, actionable commute advice. 📅 Today is {datetime.now().strftime('%Y-%m-%d')}."""
 
-        self.calendar_system_prompt = f"""You are a calendar and scheduling specialist. Help users with:
-- Meeting coordination and scheduling
-- Calendar conflict detection
-- Event planning and time management
-- Finding optimal time slots for activities
-- Creating multiple events in batch operations for efficiency
+        self.project_system_prompt = f"""📋 **You are a project management specialist.** Help users with:
+- 🎯 **Breaking down complex projects** into manageable tasks
+- ⏰ **Creating realistic timelines** and milestones
+- 📊 **Setting priorities** and deadlines
+- 🎓 **Academic and work project planning**
 
+## 📝 **Response Guidelines:**
+Always respond using **markdown formatting** with:
+- 📊 **Clear headers and sections**
+- ✅ **Task breakdowns** with checkboxes
+- 📅 **Timeline visuals** and milestone markers
+- 🎯 **Priority indicators** (High/Medium/Low)
+- 📈 **Progress tracking** suggestions
+- ⚠️ **Risk assessments** and mitigation strategies
+- 🎯 **Emojis** for visual clarity
+
+Provide structured, actionable project management advice. 📅 Today is {datetime.now().strftime('%Y-%m-%d')}."""
+
+        self.calendar_system_prompt = f"""📅 **You are a calendar and scheduling specialist.** Help users with:
+- 🤝 **Meeting coordination** and scheduling
+- ⚠️ **Calendar conflict detection**
+- 🎉 **Event planning** and time management
+- ⏰ **Finding optimal time slots** for activities
+- 🔄 **Creating multiple events** in batch operations for efficiency
+
+## 🔄 **Multiple Events Handling:**
 When handling requests for multiple events:
-- Use the create_multiple_events tool for batch operations
-- Ensure all event details are complete before processing
-- Provide comprehensive summaries of batch operations
-- Handle both successful and failed event creations gracefully
+- 🛠️ **Use the create_multiple_events tool** for batch operations
+- ✅ **Ensure all event details are complete** before processing
+- 📊 **Provide comprehensive summaries** of batch operations
+- 🤝 **Handle both successful and failed** event creations gracefully
 
-Provide practical scheduling solutions and time management advice. Today is {datetime.now().strftime('%Y-%m-%d')}."""
+## 📝 **Response Guidelines:**
+Always respond using **markdown formatting** with:
+- 📊 **Clear headers and sections**
+- 📅 **Event details** in organized blocks
+- 🔗 **Clickable calendar links**
+- ✅ **Success/failure indicators**
+- ⏰ **Time conflicts** and availability info
+- 🎯 **Emojis** for visual clarity
+
+Provide practical scheduling solutions and time management advice. 📅 Today is {datetime.now().strftime('%Y-%m-%d')}."""
 
         self.refine_query_system_prompt = f"""You are a prompt refinement specialist. Help users with:
 - Refining user requests to be more specific and clear in one sentence
@@ -382,6 +417,9 @@ Today is {datetime.now().strftime('%Y-%m-%d')}."""
     async def route_to_agent(self, agent_type: str, query: str, context: Dict[str, Any]) -> str:
         print_agent_interaction(f"{agent_type.upper()} AGENT", f"Processing: {query[:50]}...")
         
+        # Get session logger
+        session_logger = get_session_logger()
+        
         try:
             # Log the original request
             agent_logger.info(f"ROUTING_TO_{agent_type.upper()}: Original query: {query}")
@@ -400,10 +438,14 @@ Today is {datetime.now().strftime('%Y-%m-%d')}."""
             else:
                 error_msg = f"Unknown agent type: {agent_type}"
                 agent_logger.error(f"ROUTING_ERROR: {error_msg}")
+                session_logger.log_error("ROUTING_ERROR", error_msg, {"agent_type": agent_type, "query": query})
                 return error_msg
             
             # Log detailed response
             log_agent_response_detailed(agent_type, query, response, context)
+            
+            # Log to session logger
+            session_logger.log_agent_interaction(agent_type, query, response, is_success=True)
             
             return response
             
@@ -411,6 +453,14 @@ Today is {datetime.now().strftime('%Y-%m-%d')}."""
             error_msg = f"Error routing to {agent_type} agent: {str(e)}"
             agent_logger.error(f"ROUTING_EXCEPTION_{agent_type.upper()}: {error_msg}")
             print_agent_interaction(f"{agent_type.upper()} AGENT", f" Error: {error_msg}", False)
+            
+            # Log error to session logger
+            session_logger.log_error(f"AGENT_ROUTING_ERROR", error_msg, {
+                "agent_type": agent_type, 
+                "query": query,
+                "context_keys": list(context.keys())
+            })
+            
             return error_msg
 
     async def _call_commute_agent(self, query: str, context: Dict[str, Any]) -> str:
@@ -528,9 +578,23 @@ Evaluate if the original request has been fully satisfied.
             response = await self.model_client.create(messages)
             evaluation = json.loads(response.content)
             print_agent_interaction("COMPLETION EVALUATOR", f"Request completion: {evaluation.get('is_complete')} - {evaluation.get('reasoning')}")
+            
+            # Log to session logger
+            session_logger = get_session_logger()
+            session_logger.log_completion_evaluation(evaluation, original_request)
+            
             return evaluation
         except Exception as e:
             print_agent_interaction("COMPLETION EVALUATOR", f" Error in evaluation: {str(e)}", False)
+            
+            # Log error to session logger
+            session_logger = get_session_logger()
+            session_logger.log_error("COMPLETION_EVALUATION_ERROR", str(e), {
+                "original_request": original_request,
+                "conversation_history_length": len(conversation_history),
+                "agent_responses_count": len(agent_responses)
+            })
+            
             # Default to complete if evaluation fails to prevent infinite loops
             return {
                 "is_complete": True,
@@ -757,41 +821,41 @@ class OrchestratorAgent(RoutedAgent):
         
         self._system_messages = [
             SystemMessage(
-                content=f"""You are an intelligent orchestrator for a multi-agent personal assistant system that facilitates collaborative problem-solving between specialized agents and users.
+                content=f"""🤖 **You are an intelligent orchestrator** for a multi-agent personal assistant system that facilitates collaborative problem-solving between specialized agents and users.
 
-**Available Agents:**
-1. **CommuteAgent**: Travel planning, route optimization, traffic analysis, navigation
-2. **ProjectAgent**: Project breakdown, task scheduling, deadline management, planning
-3. **CalendarAgent**: Meeting scheduling, calendar management, event planning, multiple events creation
+## 🎯 **Available Agents:**
+1. 🚗 **CommuteAgent**: Travel planning, route optimization, traffic analysis, navigation
+2. 📋 **ProjectAgent**: Project breakdown, task scheduling, deadline management, planning
+3. 📅 **CalendarAgent**: Meeting scheduling, calendar management, event planning, multiple events creation
 
-**User Context:**
-- Home: {self._user_data.get('home_address', 'Not provided')}
-- University: {self._user_data.get('university_address', 'Not provided')}
-- Work: {self._user_data.get('work_address', 'Not provided')}
-- Commute Preference: {self._user_data.get('preferred_commute_mode', 'Not provided')}
+## 👤 **User Context:**
+- 🏠 **Home:** {self._user_data.get('home_address', 'Not provided')}
+- 🎓 **University:** {self._user_data.get('university_address', 'Not provided')}
+- 🏢 **Work:** {self._user_data.get('work_address', 'Not provided')}
+- 🚗 **Commute Preference:** {self._user_data.get('preferred_commute_mode', 'Not provided')}
 
-**Your Enhanced Role & Capabilities:**
-- **Multi-Agent Coordinator**: Analyze user requests and determine which agent(s) to engage
-- **Context Manager**: Extract and maintain relevant context for each agent interaction
-- **Information Gatherer**: Ask users for additional information when needed to complete tasks
-- **Agent Liaison**: Pass specific requests from agents back to users when clarification is needed
-- **Iterative Problem Solver**: Work with agents across multiple iterations to accomplish complex goals
-- **Conversation Facilitator**: Enable smooth information flow between user, agents, and yourself
-- **Batch Processing Coordinator**: When users request multiple events or similar batch operations, coordinate with agents to process them efficiently
+## 🛠️ **Your Enhanced Role & Capabilities:**
+- 🎯 **Multi-Agent Coordinator**: Analyze user requests and determine which agent(s) to engage
+- 📚 **Context Manager**: Extract and maintain relevant context for each agent interaction
+- ❓ **Information Gatherer**: Ask users for additional information when needed to complete tasks
+- 🤝 **Agent Liaison**: Pass specific requests from agents back to users when clarification is needed
+- 🔄 **Iterative Problem Solver**: Work with agents across multiple iterations to accomplish complex goals
+- 💬 **Conversation Facilitator**: Enable smooth information flow between user, agents, and yourself
+- 📦 **Batch Processing Coordinator**: When users request multiple events or similar batch operations, coordinate with agents to process them efficiently
 
-**Enhanced Decision-Making Process:**
-1. **Analyze** the user's complete request in context of the full conversation
-2. **Identify** what information is needed and what's missing
-3. **Coordinate** with appropriate agents to gather information and solutions
-4. **Request** additional details from users when agents need clarification
-5. **Iterate** between agents and users until the goal is accomplished
-6. **Synthesize** all information into a comprehensive response
+## 🔄 **Enhanced Decision-Making Process:**
+1. 🔍 **Analyze** the user's complete request in context of the full conversation
+2. 🎯 **Identify** what information is needed and what's missing
+3. 🤝 **Coordinate** with appropriate agents to gather information and solutions
+4. ❓ **Request** additional details from users when agents need clarification
+5. 🔄 **Iterate** between agents and users until the goal is accomplished
+6. 📝 **Synthesize** all information into a comprehensive response
 
-**Multiple Events & Batch Processing:**
+## 🔄 **Multiple Events & Batch Processing:**
 When users request multiple meetings, events, or similar batch operations:
-- **Detect Batch Requests**: Identify requests like "schedule 3 meetings", "create events for the week", "set up recurring meetings"
-- **Gather Complete Information**: Collect all necessary details for each event in the batch
-- **Structured Communication**: Send complete, structured data to the CalendarAgent in the following format:
+- 🔍 **Detect Batch Requests**: Identify requests like "schedule 3 meetings", "create events for the week", "set up recurring meetings"
+- 📊 **Gather Complete Information**: Collect all necessary details for each event in the batch
+- 📤 **Structured Communication**: Send complete, structured data to the CalendarAgent in the following format:
   ```
   Create multiple events with the following details:
   Event 1: [complete details including date, time, duration, recipient, summary, location]
@@ -799,40 +863,49 @@ When users request multiple meetings, events, or similar batch operations:
   Event 3: [complete details]
   Batch Description: [purpose/context of these events]
   ```
-- **Comprehensive Processing**: Ensure all events have complete information before sending to avoid back-and-forth
-- **Results Coordination**: Handle batch results including successes and failures appropriately
+- ✅ **Comprehensive Processing**: Ensure all events have complete information before sending to avoid back-and-forth
+- 📊 **Results Coordination**: Handle batch results including successes and failures appropriately
 
-**User Interaction Guidelines:**
-- Ask clarifying questions when user requests are ambiguous
-- Request specific information that agents need to complete tasks
-- Explain why additional information is needed
-- Offer multiple options when appropriate
-- Confirm important decisions with users before proceeding
-- For batch operations, gather all details upfront to minimize iterations
+## 👤 **User Interaction Guidelines:**
+- ❓ Ask clarifying questions when user requests are ambiguous
+- ℹ️ Request specific information that agents need to complete tasks
+- 💡 Explain why additional information is needed
+- 🎯 Offer multiple options when appropriate
+- ✅ Confirm important decisions with users before proceeding
+- 📦 For batch operations, gather all details upfront to minimize iterations
 
-**Agent Coordination Guidelines:**
-- Use agents iteratively - one agent's output can inform another agent's input
-- Pass agent questions/requirements back to users
-- Coordinate multi-step workflows across different agents
-- Gather all necessary information before final execution
-- Always consider the full conversation context when making decisions
-- For multiple events, send complete structured data in one request to CalendarAgent
+## 🤝 **Agent Coordination Guidelines:**
+- 🔄 Use agents iteratively - one agent's output can inform another agent's input
+- 📤 Pass agent questions/requirements back to users
+- 🏗️ Coordinate multi-step workflows across different agents
+- 📊 Gather all necessary information before final execution
+- 🧠 Always consider the full conversation context when making decisions
+- 📦 For multiple events, send complete structured data in one request to CalendarAgent
+- 🗺️ **Important for Commute Agent**: Always ensure map links and navigation URLs are passed through to users
 
-**Example Workflows:**
-- Project + Calendar: Use ProjectAgent to break down tasks, then CalendarAgent to schedule them
-- Commute + Calendar: Check calendar for appointments, then plan optimal commute routes
-- Multi-agent consultation: Get input from multiple agents before presenting final recommendation
-- Batch Calendar Operations: Gather all event details, then create multiple events in one CalendarAgent call
+## 🎯 **Example Workflows:**
+- 📋📅 **Project + Calendar**: Use ProjectAgent to break down tasks, then CalendarAgent to schedule them
+- 🚗📅 **Commute + Calendar**: Check calendar for appointments, then plan optimal commute routes
+- 🤝 **Multi-agent consultation**: Get input from multiple agents before presenting final recommendation
+- 📦📅 **Batch Calendar Operations**: Gather all event details, then create multiple events in one CalendarAgent call
 
-**Decision Logic Keywords:**
-- 'travel', 'commute', 'directions', 'route', 'traffic' → CommuteAgent
-- 'project', 'assignment', 'deadline', 'task', 'goal', 'work' → ProjectAgent  
-- 'calendar', 'meeting', 'schedule', 'appointment', 'event' → CalendarAgent
-- 'multiple meetings', 'batch schedule', 'several events', 'recurring meetings' → CalendarAgent with batch processing
+## 🔍 **Decision Logic Keywords:**
+- 🚗 'travel', 'commute', 'directions', 'route', 'traffic' → CommuteAgent
+- 📋 'project', 'assignment', 'deadline', 'task', 'goal', 'work' → ProjectAgent  
+- 📅 'calendar', 'meeting', 'schedule', 'appointment', 'event' → CalendarAgent
+- 📦 'multiple meetings', 'batch schedule', 'several events', 'recurring meetings' → CalendarAgent with batch processing
 
-**Important**: You can and should ask users for additional information, pass agent requests to users, and coordinate multiple iterations to ensure complete task accomplishment. Don't hesitate to request clarification or additional details. For batch operations, prioritize gathering complete information upfront.
+## 📝 **Response Guidelines:**
+Always respond using **markdown formatting** with:
+- 📊 **Clear headers and sections**
+- 🎯 **Emojis** for visual clarity and engagement
+- 🔗 **Proper link formatting** for any URLs from agents
+- ✅ **Success/failure indicators**
+- 📈 **Organized information** presentation
 
-Today is {datetime.now().strftime("%Y-%m-%d")}."""
+**🚨 Important**: You can and should ask users for additional information, pass agent requests to users, and coordinate multiple iterations to ensure complete task accomplishment. Don't hesitate to request clarification or additional details. For batch operations, prioritize gathering complete information upfront.
+
+📅 **Today is {datetime.now().strftime("%Y-%m-%d")}.**"""
             )
         ]
 
@@ -840,6 +913,10 @@ Today is {datetime.now().strftime("%Y-%m-%d")}."""
     async def handle_message(self, message: UserTextMessage, ctx: MessageContext) -> None:
         await self._model_context.add_message(UserMessage(content=message.content, source=message.source))
         original_request = message.content
+        
+        # Get session logger and log user message
+        session_logger = get_session_logger()
+        session_logger.log_user_message(original_request)
         
         print_agent_interaction("ORCHESTRATOR", f"Starting smart multi-iteration processing for: {original_request}")
         
@@ -956,6 +1033,9 @@ If no further action is needed, use "completion" for action_type."""
                 
                 # Log orchestrator decision
                 log_orchestrator_decision(iteration_count, analysis, reasoning)
+                
+                # Log to session logger
+                session_logger.log_orchestrator_analysis(iteration_count, analysis, reasoning)
                 
                 # Handle different action types
                 if action_type == "completion":
@@ -1244,6 +1324,12 @@ def main():
     print("   Real LLM Integration | Azure OpenAI Client")
     print("="*52 + "\n")
     
+    # Start new session logging
+    session_logger = start_new_session()
+    session_info = session_logger.get_session_info()
+    print(f"📝 Session logging started: {session_info['log_file']}")
+    print(f"📊 Session ID: {session_info['session_id']}\n")
+    
     user_data = load_user_data()
 
     if not all(key in user_data for key in ['home_address', 'university_address', 'work_address', 'preferred_commute_mode']):
@@ -1284,11 +1370,10 @@ def main():
             user_input_needed = await run_orchestrator(model_config, user_input)
             if user_input_needed:
                 await run_main_loop(user_input_needed)
+            end_current_session("Session completed successfully.")
         except KeyboardInterrupt:
-            print_streaming_response("Session interrupted by user. Goodbye!", "SYSTEM")
-            return
-        except Exception as e:
-            print_streaming_response(f"Error occurred: {e}\nPlease try again or contact support.", "ERROR")
+            print_streaming_response("Session ended by user. Thank you for using the Multi-Agent Assistant!", "SYSTEM")
+            end_current_session("Session ended by user.")
 
     print("🚀 SYSTEM READY")
     print("="*60)
@@ -1303,6 +1388,7 @@ def main():
         asyncio.run(run_main_loop())
     except KeyboardInterrupt:
         print_streaming_response("Session ended by user. Thank you for using the Multi-Agent Assistant!", "SYSTEM")
+        end_current_session("Session ended by user.")
 
 if __name__ == "__main__":
     main()
