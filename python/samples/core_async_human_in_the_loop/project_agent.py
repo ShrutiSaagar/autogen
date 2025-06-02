@@ -275,6 +275,7 @@ class TerminationHandler(DefaultInterventionHandler):
 async def main(model_config: Dict[str, Any], latest_user_input: Optional[str] = None) -> None | str:
     global state_persister
 
+    print("--------------------------------MAIN Project Agent--------------------------------")
     model_client = ChatCompletionClient.load_component(model_config)
     termination_handler = TerminationHandler()
     needs_user_input_handler = NeedsUserInputHandler()

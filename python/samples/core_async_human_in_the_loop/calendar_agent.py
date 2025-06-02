@@ -146,6 +146,19 @@ class ScheduleMeetingOutput(BaseModel):
     event_link: str = Field(description="Link to the created calendar event")
 
 
+class MultipleEventsInput(BaseModel):
+    events: list[ScheduleMeetingInput] = Field(description="List of events to create")
+    batch_description: str = Field(description="Description of the batch operation", default="Multiple events creation")
+
+
+class MultipleEventsOutput(BaseModel):
+    created_events: list[ScheduleMeetingOutput] = Field(description="List of successfully created events")
+    failed_events: list[dict] = Field(description="List of events that failed to create with error details")
+    total_created: int = Field(description="Total number of successfully created events")
+    total_failed: int = Field(description="Total number of failed events")
+    batch_summary: str = Field(description="Summary of the batch operation")
+
+
 class GetEventsInput(BaseModel):
     start_date: str = Field(description="Start date for event search (YYYY-MM-DD format)")
     end_date: str = Field(description="End date for event search (YYYY-MM-DD format)")
@@ -497,6 +510,58 @@ Original Description: {args.description}
             print(f"Date parsing error: {error}")
             raise
 
+    def create_multiple_events(self, args: MultipleEventsInput) -> Dict[str, Any]:
+        """Create multiple calendar events in a batch operation."""
+        created_events = []
+        failed_events = []
+        
+        print(f"Creating {len(args.events)} events in batch: {args.batch_description}")
+        
+        for i, event_data in enumerate(args.events):
+            try:
+                print(f"Processing event {i+1}/{len(args.events)}: {event_data.summary}")
+                
+                # Create the event using the existing single event creation method
+                event_result = self.create_event(event_data)
+                
+                created_events.append(ScheduleMeetingOutput(
+                    event_id=event_result['event_id'],
+                    event_link=event_result['event_link']
+                ))
+                
+                print(f"✅ Successfully created event {i+1}: {event_data.summary}")
+                
+            except Exception as error:
+                error_details = {
+                    'event_index': i,
+                    'event_summary': event_data.summary,
+                    'event_date': event_data.date,
+                    'event_time': event_data.time,
+                    'error_message': str(error),
+                    'error_type': type(error).__name__
+                }
+                failed_events.append(error_details)
+                print(f"Failed to create event {i+1}: {event_data.summary} - {str(error)}")
+        
+        total_created = len(created_events)
+        total_failed = len(failed_events)
+        
+        # Create batch summary
+        batch_summary = f"Batch operation completed: {total_created} events created successfully"
+        if total_failed > 0:
+            batch_summary += f", {total_failed} events failed"
+        batch_summary += f" out of {len(args.events)} total events."
+        
+        print(f"📊 Batch Summary: {batch_summary}")
+        
+        return {
+            'created_events': created_events,
+            'failed_events': failed_events,
+            'total_created': total_created,
+            'total_failed': total_failed,
+            'batch_summary': batch_summary
+        }
+
 
 class ScheduleMeetingTool(BaseTool[ScheduleMeetingInput, ScheduleMeetingOutput]):
     def __init__(self):
@@ -626,6 +691,34 @@ class CreatePlaceholderEventTool(BaseTool[CreatePlaceholderEventInput, CreatePla
         )
 
 
+class MultipleEventsTool(BaseTool[MultipleEventsInput, MultipleEventsOutput]):
+    def __init__(self):
+        super().__init__(
+            MultipleEventsInput,
+            MultipleEventsOutput,
+            "create_multiple_events",
+            "Create multiple calendar events in a single batch operation",
+        )
+        self.calendar_service = GoogleCalendarService()
+
+    async def run(self, args: MultipleEventsInput, cancellation_token: CancellationToken) -> MultipleEventsOutput:
+        print(f"Creating multiple events: {args.batch_description}")
+        print(f"Total events to create: {len(args.events)}")
+        
+        # Create the events in Google Calendar
+        batch_result = self.calendar_service.create_multiple_events(args)
+        
+        print(f"Batch operation completed: {batch_result['total_created']} created, {batch_result['total_failed']} failed")
+        
+        return MultipleEventsOutput(
+            created_events=batch_result['created_events'],
+            failed_events=batch_result['failed_events'],
+            total_created=batch_result['total_created'],
+            total_failed=batch_result['total_failed'],
+            batch_summary=batch_result['batch_summary']
+        )
+
+
 @type_subscription("scheduling_assistant_conversation")
 class SchedulingAssistantAgent(RoutedAgent):
     def __init__(
@@ -653,11 +746,21 @@ I can:
 2. View existing events in your calendar for a specific date range
 3. Edit existing calendar events (modify time, location, description, etc.)
 4. Create placeholder events with default values when information is incomplete
+5. Create multiple events in a single batch operation for efficiency
 
 For scheduling, I need details like date, time, recipient, and optionally duration, summary, description, location, and attendee email.
 For viewing events, I need a date range (start and end dates) or I will get events for the previous 7 days and the next 7 days by default.
 For editing events, I need the event ID and the fields you want to change.
 For placeholder events, I can create events with reasonable defaults and mark them for later confirmation.
+For multiple events, I can create several events at once when provided with a list of event details.
+
+**Multiple Events Creation:**
+When users request multiple meetings or events (e.g., "schedule 3 meetings", "create events for the week", "batch schedule"), I will use the multiple events tool to create them all at once. This is more efficient than creating individual events and provides a comprehensive summary of the batch operation.
+
+I expect the orchestrator to provide complete event details in the following format for multiple events:
+- A list of events with all necessary details (date, time, duration, recipient, summary, etc.)
+- A batch description explaining the purpose of these events
+- All events should be fully specified to avoid the need for additional clarification
 
 When creating placeholder events:
 - I'll use working hours (9 AM - 6 PM) for default times
@@ -676,7 +779,7 @@ Today's date is {datetime.datetime.now().strftime("%Y-%m-%d")}
     async def handle_message(self, message: UserTextMessage, ctx: MessageContext) -> None:
         await self._model_context.add_message(UserMessage(content=message.content, source=message.source))
 
-        tools = [ScheduleMeetingTool(), GetEventsTool(), GetEventsApproxTool(), EditEventTool(), CreatePlaceholderEventTool()]
+        tools = [ScheduleMeetingTool(), GetEventsTool(), GetEventsApproxTool(), EditEventTool(), CreatePlaceholderEventTool(), MultipleEventsTool()]
         response = await self._model_client.create(
             self._system_messages + (await self._model_context.get_messages()), tools=tools
         )
@@ -719,6 +822,25 @@ Today's date is {datetime.datetime.now().strftime("%Y-%m-%d")}
                     response_text = f"Placeholder event created successfully! Event ID: {result.event_id}"
                     if result.event_link:
                         response_text += f" You can view it here: {result.event_link}"
+                elif call.name == "create_multiple_events":
+                    response_text = f"**Multiple Events Creation Summary:**\n\n"
+                    response_text += f"📊 **Results:** {result.total_created} events created successfully"
+                    if result.total_failed > 0:
+                        response_text += f", {result.total_failed} events failed"
+                    response_text += f"\n\n"
+                    
+                    if result.created_events:
+                        response_text += f"✅ **Successfully Created Events:**\n"
+                        for i, event in enumerate(result.created_events, 1):
+                            response_text += f"{i}. Event ID: {event.event_id}\n   Link: {event.event_link}\n"
+                    
+                    if result.failed_events:
+                        response_text += f"\n**Failed Events:**\n"
+                        for i, failed in enumerate(result.failed_events, 1):
+                            response_text += f"{i}. {failed.get('event_summary', 'Unknown')} on {failed.get('event_date', 'Unknown')} at {failed.get('event_time', 'Unknown')}\n"
+                            response_text += f"   Error: {failed.get('error_message', 'Unknown error')}\n"
+                    
+                    response_text += f"\n📝 **Summary:** {result.batch_summary}"
                 else:
                     response_text = f"Tool {call.name} executed successfully"
                 

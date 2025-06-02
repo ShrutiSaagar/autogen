@@ -185,7 +185,10 @@ class CommuteAssistantAgent(RoutedAgent):
             SystemMessage(
                 content=f"""
 I am a helpful AI assistant that helps schedule meetings.
-If there are missing parameters, I will ask for them.
+If there are missing parameters, I will assume some options with the information I have and have been provided with and ask if its fine or should I give more options and ask for the final decision or direction on the search.
+I can also provide an estimate of the time it will take to reach the destination based on the api response.
+I can also provide a map url to navigate to the destination.
+I can also provide a list of the best routes to reach the destination.
 
 Today's date is {datetime.datetime.now().strftime("%Y-%m-%d")}
 """
@@ -285,6 +288,7 @@ async def main(model_config: Dict[str, Any], latest_user_input: Optional[str] = 
         None or str: The user input needed if the program requires user input, otherwise None.
     """
     global state_persister
+    print("--------------------------------MAIN Commute Agent--------------------------------")
 
     model_client = ChatCompletionClient.load_component(model_config)
 

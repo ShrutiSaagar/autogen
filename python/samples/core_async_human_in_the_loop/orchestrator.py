@@ -67,6 +67,7 @@ from autogen_core.models import (
 
 from calendar_agent import run_calendar_agent
 from project_agent import main as run_project_agent
+from commute_agent import main as run_commute_agent
 
 USER_DATA_FILE = "user_data.json"
 
@@ -280,6 +281,13 @@ Provide structured, actionable project management advice. Today is {datetime.now
 - Calendar conflict detection
 - Event planning and time management
 - Finding optimal time slots for activities
+- Creating multiple events in batch operations for efficiency
+
+When handling requests for multiple events:
+- Use the create_multiple_events tool for batch operations
+- Ensure all event details are complete before processing
+- Provide comprehensive summaries of batch operations
+- Handle both successful and failed event creations gracefully
 
 Provide practical scheduling solutions and time management advice. Today is {datetime.now().strftime('%Y-%m-%d')}."""
 
@@ -321,10 +329,11 @@ Today is {datetime.now().strftime('%Y-%m-%d')}."""
         self.smart_request_analyzer_prompt = f"""You are an intelligent request analyzer that can identify ambiguous calendar requests and determine what information needs to be gathered.
 
 Analyze user requests for calendar operations and identify:
-1. What the user wants to do (schedule, view, edit, etc.)
+1. What the user wants to do (schedule, view, edit, batch_schedule, etc.)
 2. What information is missing or ambiguous
 3. What assumptions can be made
 4. What information needs to be gathered from other sources
+5. Whether this is a request for multiple events/batch processing
 
 For ambiguous scheduling requests, consider:
 - Default meeting duration (30-60 minutes for business, 15-30 for quick calls)
@@ -332,9 +341,17 @@ For ambiguous scheduling requests, consider:
 - Avoid conflicts with existing events
 - Use placeholder recipients if not specified
 
+For multiple events requests:
+- Detect keywords like "multiple", "several", "batch", "recurring", "series"
+- Identify if user wants to create more than one event
+- Determine if events are related (same type, recurring pattern)
+- Check if sufficient details are provided for all events
+
 Respond with a JSON object:
 {{
-    "request_type": "schedule|view|edit|other",
+    "request_type": "schedule|view|edit|batch_schedule|other",
+    "is_multiple_events": true/false,
+    "event_count": 1,
     "is_ambiguous": true/false,
     "missing_info": ["date", "time", "recipient", "duration", "event_id"],
     "assumptions_to_make": {{
@@ -351,6 +368,12 @@ Respond with a JSON object:
         "time": "10:00",
         "duration": 30,
         "title": "Team Meeting"
+    }},
+    "batch_processing_plan": {{
+        "use_batch_creation": true/false,
+        "requires_pattern_detection": true/false,
+        "suggested_time_spacing": "1_hour",
+        "batch_description": "Weekly team meetings"
     }}
 }}
 
@@ -387,27 +410,29 @@ Today is {datetime.now().strftime('%Y-%m-%d')}."""
         except Exception as e:
             error_msg = f"Error routing to {agent_type} agent: {str(e)}"
             agent_logger.error(f"ROUTING_EXCEPTION_{agent_type.upper()}: {error_msg}")
-            print_agent_interaction(f"{agent_type.upper()} AGENT", f"❌ Error: {error_msg}", False)
+            print_agent_interaction(f"{agent_type.upper()} AGENT", f" Error: {error_msg}", False)
             return error_msg
 
     async def _call_commute_agent(self, query: str, context: Dict[str, Any]) -> str:
-        # Include conversation context in the system prompt
+        if VERBOSE_LOGGING:
+            print("Calling commute agent, query: ", query, "context: ", context)
+        
+        # Enhance the query with conversation context since project agent doesn't accept context parameter
         conversation_context = context.get("full_conversation", [])
-        context_summary = ""
         if conversation_context:
-            recent_context = conversation_context[-5:]  # Last 5 exchanges
-            context_summary = f"\n\nRecent conversation context:\n{chr(10).join(recent_context)}"
-        
-        enhanced_system_prompt = self.commute_system_prompt + context_summary
-        
-        messages = [
-            SystemMessage(content=enhanced_system_prompt),
-            UserMessage(content=f"User request: {query}\nAdditional context: {json.dumps({k: v for k, v in context.items() if k != 'full_conversation'})}", source="user")
-        ]
-        
-        response = await self.model_client.create(messages)
+            recent_context = conversation_context[-3:]  # Last 3 exchanges for context
+            context_summary = "\n".join(recent_context)
+            enhanced_query = f"Given recent conversation context:\n{context_summary}\n\nCurrent request: {query}"
+        else:
+            enhanced_query = query
+            
+        response = await run_commute_agent(model_config, enhanced_query)
         print_agent_interaction("COMMUTE AGENT", "Generated route recommendations", False)
-        return response.content
+        
+        if hasattr(response, 'content'):
+            return response.content
+        else:
+            return str(response)
 
     async def _call_project_agent(self, query: str, context: Dict[str, Any]) -> str:
         if VERBOSE_LOGGING:
@@ -505,7 +530,7 @@ Evaluate if the original request has been fully satisfied.
             print_agent_interaction("COMPLETION EVALUATOR", f"Request completion: {evaluation.get('is_complete')} - {evaluation.get('reasoning')}")
             return evaluation
         except Exception as e:
-            print_agent_interaction("COMPLETION EVALUATOR", f"❌ Error in evaluation: {str(e)}", False)
+            print_agent_interaction("COMPLETION EVALUATOR", f" Error in evaluation: {str(e)}", False)
             # Default to complete if evaluation fails to prevent infinite loops
             return {
                 "is_complete": True,
@@ -539,7 +564,7 @@ Analyze this request for calendar operations, identify ambiguities, and determin
             print_agent_interaction("SMART ANALYZER", f"Request type: {analysis.get('request_type')} | Ambiguous: {analysis.get('is_ambiguous')}")
             return analysis
         except Exception as e:
-            print_agent_interaction("SMART ANALYZER", f"❌ Error in smart analysis: {str(e)}", False)
+            print_agent_interaction("SMART ANALYZER", f" Error in smart analysis: {str(e)}", False)
             # Return basic analysis as fallback
             return {
                 "request_type": "other",
@@ -595,8 +620,63 @@ Analyze this request for calendar operations, identify ambiguities, and determin
         request_type = smart_analysis.get("request_type", "schedule")
         missing_info = smart_analysis.get("missing_info", [])
         defaults = smart_analysis.get("suggested_defaults", {})
+        is_multiple_events = smart_analysis.get("is_multiple_events", False)
+        event_count = smart_analysis.get("event_count", 1)
+        batch_processing_plan = smart_analysis.get("batch_processing_plan", {})
         
-        if request_type == "schedule":
+        if request_type == "batch_schedule" or is_multiple_events:
+            # Handle multiple events creation
+            enhanced_request = f"Create multiple events with the following details:\n\n"
+            
+            # Generate events based on analysis
+            for i in range(event_count):
+                enhanced_request += f"Event {i+1}:\n"
+                
+                # Add title/summary
+                title = gathered_info.get("title", defaults.get("title", f"Meeting {i+1}"))
+                enhanced_request += f"- Summary: {title}\n"
+                
+                # Add date (spread events if multiple)
+                base_date = gathered_info.get("date", defaults.get("date", "tomorrow"))
+                if base_date == "next_business_day":
+                    from datetime import datetime, timedelta
+                    today = datetime.now()
+                    next_business = today + timedelta(days=1 + i)  # Spread across days
+                    while next_business.weekday() >= 5:  # Skip weekends
+                        next_business += timedelta(days=1)
+                    date = next_business.strftime("%Y-%m-%d")
+                else:
+                    date = base_date
+                enhanced_request += f"- Date: {date}\n"
+                
+                # Add time (space them out if same day)
+                available_slots = gathered_info.get("available_slots", ["10:00", "11:00", "14:00", "15:00"])
+                time_index = i % len(available_slots)
+                time = gathered_info.get("time", available_slots[time_index])
+                enhanced_request += f"- Time: {time}\n"
+                
+                # Add duration
+                duration = gathered_info.get("duration", defaults.get("duration", 30))
+                enhanced_request += f"- Duration: {duration} minutes\n"
+                
+                # Add recipient
+                recipient = gathered_info.get("recipient", f"TBD - Recipient {i+1}")
+                enhanced_request += f"- Recipient: {recipient}\n"
+                
+                # Add location
+                location = gathered_info.get("location", "TBD - Location")
+                enhanced_request += f"- Location: {location}\n"
+                
+                # Add description
+                description = gathered_info.get("description", f"Scheduled meeting {i+1}")
+                enhanced_request += f"- Description: {description}\n\n"
+            
+            # Add batch description
+            batch_description = batch_processing_plan.get("batch_description", f"Batch creation of {event_count} events")
+            enhanced_request += f"Batch Description: {batch_description}\n\n"
+            enhanced_request += "NOTE: These are placeholder events that will need recipient and location confirmation."
+            
+        elif request_type == "schedule":
             # Build a comprehensive scheduling request
             enhanced_request = f"Schedule a meeting"
             
@@ -682,7 +762,7 @@ class OrchestratorAgent(RoutedAgent):
 **Available Agents:**
 1. **CommuteAgent**: Travel planning, route optimization, traffic analysis, navigation
 2. **ProjectAgent**: Project breakdown, task scheduling, deadline management, planning
-3. **CalendarAgent**: Meeting scheduling, calendar management, event planning
+3. **CalendarAgent**: Meeting scheduling, calendar management, event planning, multiple events creation
 
 **User Context:**
 - Home: {self._user_data.get('home_address', 'Not provided')}
@@ -697,6 +777,7 @@ class OrchestratorAgent(RoutedAgent):
 - **Agent Liaison**: Pass specific requests from agents back to users when clarification is needed
 - **Iterative Problem Solver**: Work with agents across multiple iterations to accomplish complex goals
 - **Conversation Facilitator**: Enable smooth information flow between user, agents, and yourself
+- **Batch Processing Coordinator**: When users request multiple events or similar batch operations, coordinate with agents to process them efficiently
 
 **Enhanced Decision-Making Process:**
 1. **Analyze** the user's complete request in context of the full conversation
@@ -706,12 +787,28 @@ class OrchestratorAgent(RoutedAgent):
 5. **Iterate** between agents and users until the goal is accomplished
 6. **Synthesize** all information into a comprehensive response
 
+**Multiple Events & Batch Processing:**
+When users request multiple meetings, events, or similar batch operations:
+- **Detect Batch Requests**: Identify requests like "schedule 3 meetings", "create events for the week", "set up recurring meetings"
+- **Gather Complete Information**: Collect all necessary details for each event in the batch
+- **Structured Communication**: Send complete, structured data to the CalendarAgent in the following format:
+  ```
+  Create multiple events with the following details:
+  Event 1: [complete details including date, time, duration, recipient, summary, location]
+  Event 2: [complete details]
+  Event 3: [complete details]
+  Batch Description: [purpose/context of these events]
+  ```
+- **Comprehensive Processing**: Ensure all events have complete information before sending to avoid back-and-forth
+- **Results Coordination**: Handle batch results including successes and failures appropriately
+
 **User Interaction Guidelines:**
 - Ask clarifying questions when user requests are ambiguous
 - Request specific information that agents need to complete tasks
 - Explain why additional information is needed
 - Offer multiple options when appropriate
 - Confirm important decisions with users before proceeding
+- For batch operations, gather all details upfront to minimize iterations
 
 **Agent Coordination Guidelines:**
 - Use agents iteratively - one agent's output can inform another agent's input
@@ -719,18 +816,21 @@ class OrchestratorAgent(RoutedAgent):
 - Coordinate multi-step workflows across different agents
 - Gather all necessary information before final execution
 - Always consider the full conversation context when making decisions
+- For multiple events, send complete structured data in one request to CalendarAgent
 
 **Example Workflows:**
 - Project + Calendar: Use ProjectAgent to break down tasks, then CalendarAgent to schedule them
 - Commute + Calendar: Check calendar for appointments, then plan optimal commute routes
 - Multi-agent consultation: Get input from multiple agents before presenting final recommendation
+- Batch Calendar Operations: Gather all event details, then create multiple events in one CalendarAgent call
 
 **Decision Logic Keywords:**
 - 'travel', 'commute', 'directions', 'route', 'traffic' → CommuteAgent
 - 'project', 'assignment', 'deadline', 'task', 'goal', 'work' → ProjectAgent  
 - 'calendar', 'meeting', 'schedule', 'appointment', 'event' → CalendarAgent
+- 'multiple meetings', 'batch schedule', 'several events', 'recurring meetings' → CalendarAgent with batch processing
 
-**Important**: You can and should ask users for additional information, pass agent requests to users, and coordinate multiple iterations to ensure complete task accomplishment. Don't hesitate to request clarification or additional details.
+**Important**: You can and should ask users for additional information, pass agent requests to users, and coordinate multiple iterations to ensure complete task accomplishment. Don't hesitate to request clarification or additional details. For batch operations, prioritize gathering complete information upfront.
 
 Today is {datetime.now().strftime("%Y-%m-%d")}."""
             )
@@ -894,7 +994,7 @@ If no further action is needed, use "completion" for action_type."""
                             error_msg = f"Error in {primary_agent} agent: {str(e)}"
                             iteration_responses.append(error_msg)
                             conversation_history.append(f"Error: {error_msg}")
-                            print_agent_interaction("ORCHESTRATOR", f"❌ {error_msg}", False)
+                            print_agent_interaction("ORCHESTRATOR", f" {error_msg}", False)
                     
                     # Execute secondary agents if specified
                     for secondary_agent in secondary_agents:
@@ -912,7 +1012,7 @@ If no further action is needed, use "completion" for action_type."""
                                 error_msg = f"Error in {secondary_agent} agent: {str(e)}"
                                 iteration_responses.append(f"\n**{secondary_agent.title()} Error:** {error_msg}")
                                 conversation_history.append(f"Error: {error_msg}")
-                                print_agent_interaction("ORCHESTRATOR", f"❌ {error_msg}", False)
+                                print_agent_interaction("ORCHESTRATOR", f" {error_msg}", False)
                     
                     # Store responses from this iteration
                     if iteration_responses:
@@ -957,7 +1057,7 @@ If no further action is needed, use "completion" for action_type."""
             
             except Exception as e:
                 error_msg = f"Error in iteration {iteration_count}: {str(e)}"
-                print_agent_interaction("ORCHESTRATOR", f"❌ {error_msg}", False)
+                print_agent_interaction("ORCHESTRATOR", f" {error_msg}", False)
                 agent_responses.append(error_msg)
                 all_response_parts.append(error_msg)
                 break
@@ -1166,7 +1266,7 @@ def main():
         with open("model_config.yml") as f:
             model_config = yaml.safe_load(f)
     except FileNotFoundError:
-        print("❌ Error: model_config.yml not found. Please create it using model_config_template.yml as a template.")
+        print(" Error: model_config.yml not found. Please create it using model_config_template.yml as a template.")
         return
 
     def get_user_input(question_for_user: str):
